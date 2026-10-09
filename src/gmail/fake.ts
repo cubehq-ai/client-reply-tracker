@@ -112,7 +112,8 @@ export class FakeGmailClient implements GmailClient {
     const rfcMessageId = /^message-id:\s*(.+)$/im.exec(rawMime)?.[1]?.trim() ?? `<fake-${Date.now()}@cubehq.ai>`;
     this.sent.push({ mailbox, mime: rawMime, threadId });
     if (!config.safety.sendEnabled) {
-      logger.warn({ mailbox, threadId }, 'SEND_ENABLED=false — dry run, message not sent');
+      logger.warn({ mailbox, threadId, bytes: rawMime.length }, 'SEND_ENABLED=false — dry run, message not sent');
+      logger.info({ mime: rawMime }, 'dry-run MIME');
       return { id: `dryrun-${this.sent.length}`, threadId: threadId ?? 'dryrun-thread', rfcMessageId, dryRun: true };
     }
     // With sending enabled the fake also materialises the sent copy, so the
