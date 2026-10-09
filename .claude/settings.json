@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(npm *)", "Bash(npx *)", "Bash(pnpm *)", "Bash(node *)", "Bash(tsc *)",
+      "Bash(python3 *)", "Bash(pip *)", "Bash(prisma *)", "Bash(docker compose *)",
+      "Bash(docker ps*)", "Bash(git init*)", "Bash(git status*)", "Bash(git diff*)",
+      "Bash(git log*)", "Bash(git add *)", "Bash(git commit *)", "Bash(git checkout *)",
+      "Bash(ls *)", "Bash(cat *)", "Bash(mkdir *)", "Bash(cp *)", "Bash(mv *)",
+      "Bash(touch *)", "Bash(grep *)", "Bash(find *)", "Bash(sed *)", "Bash(echo *)",
+      "Bash(curl http://localhost*)"
+    ],
+    "deny": [
+      "Read(./.env)", "Read(./.env.*)", "Read(./**/*service-account*.json)",
+      "Bash(git push*)", "Bash(rm -rf /*)", "Bash(rm -rf ~*)",
+      "Bash(gcloud *)", "Bash(gsutil *)"
+    ]
+  }
+}

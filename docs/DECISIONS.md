@@ -1,0 +1,10 @@
+# Decisions log
+One line per decision made without asking: date — decision — reason.
+
+- 2026-10-09 — Stack: TypeScript + Fastify API + Vite/React SPA + Postgres with raw SQL migrations (`pg`), no ORM — Next.js was the stated preference, but this app is two processes (API + long-running sync worker) and Next adds no value to the worker half; raw SQL keeps the spec's §10 schema readable and avoids a codegen step. Logged instead of asked, per CLAUDE.md.
+- 2026-10-09 — Job scheduling: `node-cron` in-process rather than BullMQ/pg-boss — no Redis available locally and the job set is a handful of periodic sweeps, not a high-throughput queue. Swap-in point is `src/worker/index.ts`.
+- 2026-10-09 — Docker unavailable on this machine; installed Homebrew PostgreSQL 16 locally and then moved to the user-supplied Neon database rather than falling back to SQLite — SQLite would have diverged from the production dialect (citext, arrays, jsonb).
+- 2026-10-09 — A service account key is present in the repo root but `.claude/settings.json` denies reading it, so all work is against the fake Gmail/Directory backend. The key file is gitignored. Going live is documented in docs/STATUS.md.
+- 2026-10-09 — SPEC §16 answers taken from CLAUDE.md defaults: allowlist via WATCHED_MAILBOXES (empty = all active users); members see own/watched/assigned only; SLA 24 business hours Mon–Fri Asia/Kolkata; "Thanks"-type FYI does not reopen a replied item; only admins may send as shared inboxes; 30-day backfill; 90-day body retention; exclusions via EXCLUDED_MAILBOXES/EXCLUDED_LABELS.
+- 2026-10-09 — Added `items.client_id` (SPEC §10 indexes it but the column list omits it) and split `messages` into `messages` + `message_copies` — one row per RFC Message-ID plus N per-mailbox copies — because the spec's single table cannot represent "same message in three mailboxes" without duplicating rows, which breaks the one-item-per-conversation rule.
+- 2026-10-09 — Entrypoint detection uses `pathToFileURL(argv[1])` rather than `file://${argv[1]}`: the repo path contains a space, which URL-encodes to %20 and silently made every CLI script a no-op.
