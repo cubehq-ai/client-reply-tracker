@@ -5,6 +5,7 @@ import { setClients } from '../src/gmail/index.js';
 import { setLlmClient } from '../src/llm/index.js';
 import { FakeLlmClient } from '../src/llm/fake.js';
 import { clearMailboxCache } from '../src/pipeline/ingest.js';
+import { clearModelCache } from '../src/llm/localClassifier.js';
 import { discoverMailboxes } from '../src/sync/discovery.js';
 import { syncClients } from '../src/sync/clients.js';
 import { seedReferenceData } from '../src/sync/seed.js';
@@ -24,7 +25,14 @@ export async function freshHarness(): Promise<Harness> {
   await query(`TRUNCATE items, item_events, item_locks, messages, message_copies, conversations,
     conversation_keys, classifications, classifier_feedback, audit_log, attachments RESTART IDENTITY CASCADE`);
   await query('UPDATE mailboxes SET last_history_id = NULL, backfilled_at = NULL, last_synced_at = NULL');
+  // Rules and manual client mappings are created by the actions under test and
+  // would otherwise leak into the next test, silently filtering its fixtures.
+  await query('TRUNCATE rules RESTART IDENTITY');
+  await query("DELETE FROM client_contacts WHERE source = 'manual'");
+  await query("DELETE FROM client_domains WHERE source = 'manual'");
+  await query("DELETE FROM settings WHERE key = 'local_classifier_v1'");
   clearMailboxCache();
+  clearModelCache();
   return { gmail, llm };
 }
 

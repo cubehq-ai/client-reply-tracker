@@ -77,7 +77,8 @@ export async function ignoreItem(
 
   await query(
     `UPDATE items SET state = 'ignored', ignore_reason = $2, muted = $3,
-                      state_since = now(), snoozed_until = NULL, updated_at = now()
+                      state_since = now(), acted_on_external_at = last_external_at,
+                      snoozed_until = NULL, updated_at = now()
       WHERE id = $1`,
     [itemId, reason, muted],
   );
@@ -94,7 +95,8 @@ export async function undoIgnore(user: SessionUser, itemId: number): Promise<{ s
 
   await query(
     `UPDATE items SET state = 'needs_reply', ignore_reason = NULL, muted = false,
-                      state_since = now(), updated_at = now() WHERE id = $1`,
+                      state_since = now(), acted_on_external_at = NULL, updated_at = now()
+      WHERE id = $1`,
     [itemId],
   );
   // Recompute so a reply that landed meanwhile is still honoured.
@@ -111,7 +113,9 @@ export async function snoozeItem(user: SessionUser, itemId: number, until: Date)
     throw new HttpError(400, 'snooze time must be in the future');
   }
   await query(
-    `UPDATE items SET state = 'snoozed', snoozed_until = $2, state_since = now(), updated_at = now() WHERE id = $1`,
+    `UPDATE items SET state = 'snoozed', snoozed_until = $2, state_since = now(),
+                      acted_on_external_at = last_external_at, updated_at = now()
+      WHERE id = $1`,
     [itemId, until],
   );
   await recordEvent(itemId, item.state, 'snoozed', 'snoozed', user.email, { until: until.toISOString() });
@@ -122,7 +126,9 @@ export async function snoozeItem(user: SessionUser, itemId: number, until: Date)
 export async function handledElsewhere(user: SessionUser, itemId: number, note?: string): Promise<{ state: string }> {
   const item = await loadItem(itemId);
   await query(
-    `UPDATE items SET state = 'handled_elsewhere', state_since = now(), updated_at = now() WHERE id = $1`,
+    `UPDATE items SET state = 'handled_elsewhere', state_since = now(),
+                      acted_on_external_at = last_external_at, updated_at = now()
+      WHERE id = $1`,
     [itemId],
   );
   await recordEvent(itemId, item.state, 'handled_elsewhere', 'handled_elsewhere', user.email, { note });
@@ -151,7 +157,7 @@ export async function reassignItem(user: SessionUser, itemId: number, ownerEmail
 export async function markNeedsReply(user: SessionUser, itemId: number): Promise<{ state: string }> {
   const item = await loadItem(itemId);
   await query(
-    `UPDATE items SET state = 'needs_reply', state_since = now(),
+    `UPDATE items SET state = 'needs_reply', state_since = now(), acted_on_external_at = NULL,
                       restored_from_filter = CASE WHEN state = 'auto_ignored' THEN true ELSE restored_from_filter END,
                       updated_at = now()
       WHERE id = $1`,

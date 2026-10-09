@@ -16,6 +16,7 @@ export default defineConfig({
       GMAIL_WRITE_ENABLED: 'false',
       ORG_DOMAINS: 'cubehq.ai',
       GROUP_ADDRESSES: 'support@cubehq.ai,hello@cubehq.ai',
+      LOG_LEVEL: 'silent',
     },
     testTimeout: 60_000,
     hookTimeout: 60_000,

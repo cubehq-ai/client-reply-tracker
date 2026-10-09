@@ -25,6 +25,7 @@ interface ItemRow {
   muted: boolean;
   snoozed_until: Date | null;
   state_since: Date;
+  acted_on_external_at: Date | null;
   reopen_count: number;
   sending_since: Date | null;
 }
@@ -76,7 +77,8 @@ export async function recomputeItemState(
   const now = opts.now ?? new Date();
 
   const itemRes = await c.query<ItemRow>(
-    'SELECT id, state, muted, snoozed_until, state_since, reopen_count, sending_since FROM items WHERE conversation_id = $1',
+    `SELECT id, state, muted, snoozed_until, state_since, acted_on_external_at, reopen_count, sending_since
+       FROM items WHERE conversation_id = $1`,
     [conversationId],
   );
   const item = itemRes.rows[0];
@@ -121,7 +123,13 @@ export async function recomputeItemState(
   }
 
   const repliedAfterExternal = lastReply !== null && lastReply.internal_date > lastExternal.internal_date;
-  const externalAfterUserAction = lastExternal.internal_date > item.state_since;
+  // Compare against the external message the user dismissed, when we have it.
+  // Falling back to state_since mixes two clocks and loses same-millisecond
+  // arrivals, so it is only a last resort for rows predating the column.
+  const externalAfterUserAction =
+    item.acted_on_external_at !== null
+      ? lastExternal.internal_date > item.acted_on_external_at
+      : lastExternal.internal_date > item.state_since;
 
   if (repliedAfterExternal) {
     next = 'replied';

@@ -15,6 +15,8 @@ import { discoverMailboxes } from '../sync/discovery.js';
 import { reconcileOpenItems } from '../sync/reconcile.js';
 import { handlePubSubPush } from '../sync/pubsub.js';
 import { computeMetrics } from './metrics.js';
+import { modelStatus, trainLocalClassifier } from '../llm/localClassifier.js';
+import { sendDailyDigests } from '../sync/digest.js';
 import {
   acquireLock, handledElsewhere, ignoreItem, linkToClient, markNeedsReply,
   reassignItem, releaseLock, setAwaitingClient, snoozeItem, undoIgnore,
@@ -287,6 +289,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     ['sync-clients', () => syncClients()],
     ['discover', discoverMailboxes],
     ['reconcile', reconcileOpenItems],
+    ['train-classifier', trainLocalClassifier],
+    ['digests', sendDailyDigests],
   ] as const) {
     app.post(`/api/admin/${path}`, async (req) => {
       const user = await requireUser(req);
@@ -299,6 +303,12 @@ export async function buildServer(): Promise<FastifyInstance> {
       return result as object;
     });
   }
+
+  app.get('/api/admin/classifier', async (req) => {
+    const user = await requireUser(req);
+    requireRole(user, ['admin']);
+    return modelStatus();
+  });
 
   app.get('/api/admin/context', async (req) => {
     const user = await requireUser(req);

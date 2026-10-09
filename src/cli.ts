@@ -9,6 +9,9 @@ import { seedReferenceData } from './sync/seed.js';
 import { reconcileOpenItems } from './sync/reconcile.js';
 import { renewWatches } from './sync/watch.js';
 import { purgeOldBodies } from './sync/retention.js';
+import { sendDailyDigests, sendImmediateAlerts } from './sync/digest.js';
+import { sweepAwaitingClient, sweepStuckSends, wakeSnoozed } from './sync/followup.js';
+import { modelStatus, trainLocalClassifier } from './llm/localClassifier.js';
 
 const commands: Record<string, () => Promise<unknown>> = {
   migrate: () => migrate(),
@@ -23,6 +26,11 @@ const commands: Record<string, () => Promise<unknown>> = {
   reconcile: () => reconcileOpenItems(),
   'renew-watches': () => renewWatches(),
   'purge-bodies': () => purgeOldBodies(),
+  digests: () => sendDailyDigests(),
+  alerts: () => sendImmediateAlerts(),
+  sweeps: async () => ({ woken: await wakeSnoozed(), stuckSends: await sweepStuckSends(), awaiting: await sweepAwaitingClient() }),
+  'train-classifier': () => trainLocalClassifier(),
+  'classifier-status': () => modelStatus(),
   bootstrap: async () => {
     await migrate();
     await seedReferenceData();

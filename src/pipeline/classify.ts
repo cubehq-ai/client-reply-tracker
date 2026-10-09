@@ -1,8 +1,9 @@
 import { one, query } from '../db/pool.js';
 import { getLlmClient } from '../llm/index.js';
+import { localClassify } from '../llm/localClassifier.js';
 import type { Classification, ClassificationInput } from '../llm/types.js';
 
-const ACK_PATTERN = /^(thanks|thank you|thx|ta|got it|received|noted|perfect|great|awesome|will do|sounds good|ok|okay|understood|appreciate it|cheers|many thanks)[\s!.,:)]*$/i;
+const ACK_PATTERN = new RegExp(`^(thanks(\\s+(so much|a lot|again|a ton))?|thank you(\\s+(so much|very much))?|many thanks|thx|ta|got it|received|noted|perfect|great|awesome|excellent|will do|sounds good|ok(ay)?|understood|appreciate it|cheers|no worries|all good|that works)([\\s,.!;:-]+(thanks(\\s+(so much|a lot|again|a ton))?|thank you(\\s+(so much|very much))?|many thanks|thx|ta|got it|received|noted|perfect|great|awesome|excellent|will do|sounds good|ok(ay)?|understood|appreciate it|cheers|no worries|all good|that works))*[\\s!.,:)]*$`, 'i');
 
 /**
  * Tier A (SPEC 4 step 5): a very short acknowledgement with no question mark is
@@ -46,7 +47,12 @@ export async function classifyMessage(rfcMessageId: string, input: Classificatio
     };
   }
 
-  const result = heuristicClassify(input) ?? (await getLlmClient().classify(input));
+  // Tier A heuristic, then the locally trained model, then the LLM. Each step
+  // only answers when it is sure, so cost falls as the model learns (SPEC 13).
+  const result =
+    heuristicClassify(input) ??
+    (await localClassify(input)) ??
+    (await getLlmClient().classify(input));
 
   await query(
     `INSERT INTO classifications (rfc_message_id, needs_reply, confidence, intent, priority, summary, tier, model)

@@ -1,6 +1,6 @@
 import type { Classification, ClassificationInput, DraftInput, Intent, LlmClient, Priority } from './types.js';
 
-const ACK = /^(thanks|thank you|thx|ta|got it|received|noted|perfect|great|awesome|will do|sounds good|ok|okay|understood|appreciate it|cheers)[\s!.,:)]*$/i;
+const ACK = new RegExp(`^(thanks(\\s+(so much|a lot|again|a ton))?|thank you(\\s+(so much|very much))?|many thanks|thx|ta|got it|received|noted|perfect|great|awesome|excellent|will do|sounds good|ok(ay)?|understood|appreciate it|cheers|no worries|all good|that works)([\\s,.!;:-]+(thanks(\\s+(so much|a lot|again|a ton))?|thank you(\\s+(so much|very much))?|many thanks|thx|ta|got it|received|noted|perfect|great|awesome|excellent|will do|sounds good|ok(ay)?|understood|appreciate it|cheers|no worries|all good|that works))*[\\s!.,:)]*$`, 'i');
 const QUESTION = /\?|\b(could you|can you|would you|please (send|share|confirm|advise|let)|when (can|will)|what is|how do|any update|following up|any news|waiting (on|for))\b/i;
 const COMPLAINT = /\b(unacceptable|disappointed|frustrated|escalate|still (not|broken|down|failing)|third (day|time)|no update|breach|refund|cancel our)\b/i;
 const URGENT = /\b(urgent|asap|immediately|critical|down|outage|blocked|blocker|today)\b/i;
