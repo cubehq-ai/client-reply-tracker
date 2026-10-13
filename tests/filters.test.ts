@@ -7,7 +7,7 @@ function msg(over: Partial<NormalizedMessage> = {}): NormalizedMessage {
     gmailMessageId: 'm1', gmailThreadId: 't1', mailbox: 'priya@cubehq.ai', labels: ['INBOX'],
     rfcMessageId: '<m1@acme.com>', inReplyTo: null, references: [],
     fromEmail: 'ops@acme.com', fromDomain: 'acme.com', fromName: 'Ops',
-    to: ['priya@cubehq.ai'], cc: [], subject: 'A question', normalizedSubject: 'a question',
+    to: ['priya@cubehq.ai'], cc: [], bcc: [], subject: 'A question', normalizedSubject: 'a question',
     internalDate: new Date(), snippet: '', bodyText: 'hi', cleanedBody: 'hi',
     headers: {}, hasCalendarPart: false, isDraft: false, attachments: [],
     ...over,

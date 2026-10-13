@@ -20,17 +20,20 @@ const STATUSES = [
 const OVERLAYS = [
   { key: 'overdue', label: 'Overdue', facet: 'overdue' as const },
   { key: 'unmatched', label: 'Unmatched', facet: 'unmatched' as const },
-  { key: 'lowConfidence', label: 'Low confidence', facet: 'lowConfidence' as const },
   { key: 'awaitingClient', label: 'Awaiting client', facet: 'awaitingClient' as const },
 ];
 
 export type Filters = Record<string, string>;
 
-export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen, openItem, title, subtitle }: {
+export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen, openItem, title, subtitle, refreshKey, classifier }: {
   user: User; filters: Filters; setFilters: (f: Filters) => void;
   clients: any[]; users: any[]; teams: any[];
   onOpen: (id: number) => void; openItem: number | null;
   title: string; subtitle: string;
+  /** Bumped only when something actually changed; opening an item does not. */
+  refreshKey: number;
+  /** 'heuristic' or 'anthropic' — decides whether a confidence score means anything. */
+  classifier: string;
 }) {
   const [data, setData] = useState<{ items: QueueItem[]; total: number; facets: InboxFacets } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,11 +46,12 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
 
   useEffect(() => {
     let live = true;
-    setData(null);
+    // Keep the current rows on screen while refetching, so the list does not
+    // blank out and jump every time something changes.
     setError(null);
     api.inbox(params).then((d) => live && setData(d)).catch((e) => live && setError(e.message));
     return () => { live = false; };
-  }, [params, openItem]);
+  }, [params, refreshKey]);
 
   const set = (patch: Filters) => setFilters({ ...filters, ...patch });
 
@@ -111,6 +115,11 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
           );
         })}
         <span className="chip-sep" />
+        {classifier !== 'heuristic' && (
+          <button className={`chip ${filters.lowConfidence === 'true' ? 'on' : ''}`} onClick={() => toggleOverlay('lowConfidence')}>
+            Low confidence <span className="chip-n">{data?.facets.lowConfidence ?? 0}</span>
+          </button>
+        )}
         {OVERLAYS.map((o) => (
           <button key={o.key} className={`chip ${filters[o.key] === 'true' ? 'on' : ''}`} onClick={() => toggleOverlay(o.key)}>
             {o.label} <span className="chip-n">{data?.facets[o.facet] ?? 0}</span>
@@ -178,7 +187,6 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
               {it.subject}
               {it.priority === 'high' && <span className="tag high">high</span>}
               {it.overdue && <span className="tag overdue">overdue</span>}
-              {it.lowConfidence && <span className="tag low-conf">low confidence</span>}
               {it.muted && <span className="tag">muted</span>}
               {it.filterReason && <span className="tag">{it.filterReason}</span>}
             </div>

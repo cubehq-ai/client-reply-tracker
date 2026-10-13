@@ -16,6 +16,7 @@ export interface ThreadMessage {
   from: string;
   to: string[];
   cc: string[];
+  bcc: string[];
   subject: string;
   date: string;
   direction: 'in' | 'out';
@@ -71,7 +72,7 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
   // trips dominate, so issue them together.
   const [rows, ctx, ownThread, lock] = await Promise.all([
     query<any>(
-      `SELECT id, rfc_message_id, from_email, to_emails, cc_emails, subject, internal_date,
+      `SELECT id, rfc_message_id, from_email, to_emails, cc_emails, bcc_emails, subject, internal_date,
               direction, body_text_trunc, snippet, is_draft, filter_reason
          FROM messages WHERE conversation_id = $1 ORDER BY internal_date ASC`,
       [item.conversation_id],
@@ -97,6 +98,7 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
     from: r.from_email,
     to: r.to_emails ?? [],
     cc: r.cc_emails ?? [],
+    bcc: r.bcc_emails ?? [],
     subject: r.subject ?? '',
     date: r.internal_date.toISOString(),
     direction: r.direction,
@@ -120,10 +122,30 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
   const baseSubject = normalizeSubject(item.subject ?? '');
   const replySubject = baseSubject ? `Re: ${item.subject.replace(/^((re|fwd?)\s*:\s*)+/i, '')}` : 'Re:';
 
-  const sendAs = [user.email];
-  if (user.canSendAsShared || user.role === 'admin') {
-    const shared = await query<{ email: string }>("SELECT email FROM mailboxes WHERE kind = 'shared' AND status = 'active'");
-    sendAs.push(...shared.map((s) => s.email));
+  // Which of our mailboxes actually hold this thread; replying from one of
+  // them keeps the conversation in the right place for the client.
+  const holders = await query<{ email: string }>(
+    `SELECT DISTINCT mb.email FROM message_copies mc
+       JOIN messages m ON m.id = mc.message_id
+       JOIN mailboxes mb ON mb.id = mc.mailbox_id
+      WHERE m.conversation_id = $1 AND mc.deleted = false AND mb.status = 'active'
+      ORDER BY mb.email`,
+    [item.conversation_id],
+  );
+
+  const sendAs = [...holders.map((h) => h.email)];
+  if (user.role === 'admin') {
+    // An admin oversees every mailbox, so any of them can be the sender.
+    const all = await query<{ email: string }>(
+      "SELECT email FROM mailboxes WHERE status = 'active' ORDER BY kind DESC, email",
+    );
+    sendAs.push(...all.map((a) => a.email));
+  } else {
+    sendAs.push(user.email);
+    if (user.canSendAsShared) {
+      const shared = await query<{ email: string }>("SELECT email FROM mailboxes WHERE kind = 'shared' AND status = 'active'");
+      sendAs.push(...shared.map((s) => s.email));
+    }
   }
 
   return {
@@ -277,13 +299,16 @@ export interface SendReplyResult {
 export async function sendReply(user: SessionUser, input: SendReplyInput): Promise<SendReplyResult> {
   const thread = await getThread(user, input.itemId, { refresh: true });
 
-  const sendAs = (input.sendAs ?? user.email).toLowerCase();
+  const sendAs = (input.sendAs ?? thread.reply.sendAs[0] ?? user.email).toLowerCase();
   if (sendAs !== user.email) {
-    // Only admins, or users with the flag, may send as a shared inbox (SPEC 9).
+    // The composer offers these, but the server decides (SPEC 9, 11).
+    if (!thread.reply.sendAs.includes(sendAs)) {
+      throw new HttpError(403, 'you may not send as that mailbox');
+    }
     const ctx = await loadOrgContext();
-    if (!ctx.isSharedInbox(sendAs)) throw new HttpError(403, 'you may only send as yourself');
-    if (!(user.canSendAsShared || user.role === 'admin')) {
-      throw new HttpError(403, 'you are not allowed to send as a shared inbox');
+    const isShared = ctx.isSharedInbox(sendAs);
+    if (user.role !== 'admin' && !(isShared && user.canSendAsShared)) {
+      throw new HttpError(403, 'you are not allowed to send as that mailbox');
     }
   }
 

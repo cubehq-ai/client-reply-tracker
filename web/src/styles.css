@@ -399,3 +399,10 @@ td > input[type="text"] { display: inline-block; }
 .composer-card textarea.composer { border: none; border-radius: 0; min-height: 160px; padding: 10px 12px; }
 .composer-card textarea.composer:focus { outline: none; }
 .composer-actions { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+
+/* To / Cc / Bcc read as distinct lines, not one merged list. */
+.addr-line { font-size: 12px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.addr-label {
+  display: inline-block; min-width: 28px; font-weight: 600;
+  color: var(--text); opacity: .55; margin-right: 6px;
+}

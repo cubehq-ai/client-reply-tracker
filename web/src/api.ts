@@ -26,6 +26,7 @@ export interface InboxFacets {
 
 export interface ThreadMessage {
   id: number; rfcMessageId: string; from: string; to: string[]; cc: string[];
+  bcc: string[];
   subject: string; date: string; direction: 'in' | 'out'; body: string;
   snippet: string; isDraft: boolean; filterReason: string | null;
 }

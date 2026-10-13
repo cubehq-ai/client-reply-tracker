@@ -19,8 +19,8 @@ const IGNORE_SCOPES = [
 const WIDTH_KEY = 'rq.drawer.width';
 const MIN_WIDTH = 420;
 
-export function Thread({ itemId, user, clients, users, onClose, onChanged }: {
-  itemId: number; user: User; clients: any[]; users: any[];
+export function Thread({ itemId, user, clients, onClose, onChanged }: {
+  itemId: number; user: User; clients: any[];
   onClose: () => void; onChanged: () => void;
 }) {
   const [thread, setThread] = useState<ThreadView | null>(null);
@@ -30,7 +30,7 @@ export function Thread({ itemId, user, clients, users, onClose, onChanged }: {
   const [refreshing, setRefreshing] = useState(false);
   const [collision, setCollision] = useState<any>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [panel, setPanel] = useState<'ignore' | 'snooze' | 'link' | 'assign' | null>(null);
+  const [panel, setPanel] = useState<'ignore' | 'link' | null>(null);
 
   // The composer is closed until a message is replied to.
   const [composer, setComposer] = useState<{ replyToMessageId: number; to: string; cc: string; subject: string } | null>(null);
@@ -243,9 +243,6 @@ export function Thread({ itemId, user, clients, users, onClose, onChanged }: {
               <button className="btn small primary" onClick={() => openComposer(lastMessageId, true)}>Reply</button>
             )}
             <button className={`btn small ${panel === 'ignore' ? 'primary' : ''}`} onClick={() => setPanel(panel === 'ignore' ? null : 'ignore')}>Ignore</button>
-            <button className={`btn small ${panel === 'snooze' ? 'primary' : ''}`} onClick={() => setPanel(panel === 'snooze' ? null : 'snooze')}>Snooze</button>
-            <button className="btn small" disabled={busy} onClick={() => run(() => api.act(itemId, 'handled'), 'Marked handled elsewhere.')}>Handled elsewhere</button>
-            <button className={`btn small ${panel === 'assign' ? 'primary' : ''}`} onClick={() => setPanel(panel === 'assign' ? null : 'assign')}>Reassign</button>
             {thread?.state === 'fyi' && (
               <button className="btn small" disabled={busy} onClick={() => run(() => api.act(itemId, 'needs-reply'), 'Moved to Needs Reply.')}>Actually needs reply</button>
             )}
@@ -258,15 +255,6 @@ export function Thread({ itemId, user, clients, users, onClose, onChanged }: {
           </div>
 
           {panel === 'ignore' && <IgnorePanel busy={busy} onIgnore={(reason, scope) => run(() => api.act(itemId, 'ignore', { reason, scope }), 'Ignored.')} />}
-          {panel === 'snooze' && <SnoozePanel busy={busy} onSnooze={(until) => run(() => api.act(itemId, 'snooze', { until }), 'Snoozed.')} />}
-          {panel === 'assign' && (
-            <div className="toolbar" style={{ marginBottom: 0 }}>
-              <select defaultValue="" onChange={(e) => e.target.value && run(() => api.act(itemId, 'reassign', { ownerEmail: e.target.value }), `Reassigned to ${e.target.value}.`)}>
-                <option value="">Reassign to…</option>
-                {users.map((u) => <option key={u.email} value={u.email}>{u.email}</option>)}
-              </select>
-            </div>
-          )}
           {panel === 'link' && (
             <LinkPanel clients={clients} busy={busy} onLink={(clientId, mode) => run(() => api.act(itemId, 'link-client', { clientId, mode }), 'Linked.')} />
           )}
@@ -288,24 +276,6 @@ function IgnorePanel({ busy, onIgnore }: { busy: boolean; onIgnore: (reason: str
         {IGNORE_SCOPES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
       </select>
       <div><button className="btn danger" disabled={busy} onClick={() => onIgnore(reason, scope)}>Confirm ignore</button></div>
-    </div>
-  );
-}
-
-function SnoozePanel({ busy, onSnooze }: { busy: boolean; onSnooze: (until: string) => void }) {
-  const presets = [
-    { label: 'In 3 hours', ms: 3 * 3600_000 },
-    { label: 'Tomorrow morning', ms: 18 * 3600_000 },
-    { label: 'Next week', ms: 7 * 86400_000 },
-  ];
-  const [custom, setCustom] = useState('');
-  return (
-    <div className="toolbar" style={{ marginBottom: 0 }}>
-      {presets.map((p) => (
-        <button key={p.label} className="btn" disabled={busy} onClick={() => onSnooze(new Date(Date.now() + p.ms).toISOString())}>{p.label}</button>
-      ))}
-      <input type="datetime-local" value={custom} onChange={(e) => setCustom(e.target.value)} />
-      <button className="btn" disabled={busy || !custom} onClick={() => onSnooze(new Date(custom).toISOString())}>Snooze until</button>
     </div>
   );
 }

@@ -31,21 +31,28 @@ export function Message({ message, open, onToggle, onReply, onReplyAll }: {
     );
   }
 
-  const recipients = [...message.to, ...message.cc].filter(Boolean);
+  const to = message.to.filter(Boolean);
+  const cc = message.cc.filter(Boolean);
+  const bcc = (message.bcc ?? []).filter(Boolean);
+  const replyAllCount = to.length + cc.length;
 
   return (
     <div className={`msg ${message.direction === 'out' ? 'out' : ''}`}>
       <div className="msg-head">
         <span className="msg-head-who">
-          <strong>{message.from}</strong>
-          {recipients.length > 0 && <span className="muted"> to {recipients.slice(0, 3).join(', ')}{recipients.length > 3 ? ` +${recipients.length - 3}` : ''}</span>}
-          {message.isDraft && <span className="tag" style={{ marginLeft: 6 }}>draft</span>}
-          {message.filterReason && <span className="tag" style={{ marginLeft: 6 }}>{message.filterReason}</span>}
+          <div>
+            <strong>{message.from}</strong>
+            {message.isDraft && <span className="tag" style={{ marginLeft: 6 }}>draft</span>}
+            {message.filterReason && <span className="tag" style={{ marginLeft: 6 }}>{message.filterReason}</span>}
+          </div>
+          {to.length > 0 && <div className="addr-line"><span className="addr-label">To</span>{to.join(', ')}</div>}
+          {cc.length > 0 && <div className="addr-line"><span className="addr-label">Cc</span>{cc.join(', ')}</div>}
+          {bcc.length > 0 && <div className="addr-line"><span className="addr-label">Bcc</span>{bcc.join(', ')}</div>}
         </span>
         <span className="msg-head-actions">
           <span className="muted">{when.toLocaleString()}</span>
           <button className="btn small" onClick={onReply} title="Reply to this message">Reply</button>
-          {recipients.length > 1 && (
+          {replyAllCount > 1 && (
             <button className="btn small" onClick={onReplyAll} title="Reply to everyone on this message">Reply all</button>
           )}
           <button className="btn small" onClick={onToggle} title="Collapse">−</button>

@@ -176,14 +176,14 @@ async function upsertMessage(
   const res = await c.query<{ id: string }>(
     `INSERT INTO messages (conversation_id, rfc_message_id, from_email, from_domain, to_emails, cc_emails,
                            subject, internal_date, direction, snippet, body_text_trunc, in_reply_to,
-                           references_ids, is_draft)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                           references_ids, is_draft, bcc_emails)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      ON CONFLICT (rfc_message_id) DO NOTHING
      RETURNING id`,
     [
       conversationId, msg.rfcMessageId, msg.fromEmail, msg.fromDomain, msg.to, msg.cc,
       msg.subject, msg.internalDate, senderInternal ? 'out' : 'in', msg.snippet,
-      msg.bodyText, msg.inReplyTo, msg.references, msg.isDraft,
+      msg.bodyText, msg.inReplyTo, msg.references, msg.isDraft, msg.bcc,
     ],
   );
 

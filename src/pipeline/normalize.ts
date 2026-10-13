@@ -13,6 +13,7 @@ export interface NormalizedMessage {
   fromName: string;
   to: string[];
   cc: string[];
+  bcc: string[];
   subject: string;
   normalizedSubject: string;
   internalDate: Date;
@@ -76,6 +77,8 @@ export function parseReferences(value: string | undefined): string[] {
 
 const QUOTE_MARKERS = [
   /^On .+ wrote:\s*$/i,
+  /^Begin forwarded message:/i,
+  /^-{3,}\s*Forwarded message\s*-{3,}/i,
   /^-{2,}\s*Original Message\s*-{2,}$/i,
   /^_{5,}$/,
   /^From:\s.+$/i,
@@ -124,6 +127,8 @@ export function normalize(raw: RawMessage, mailbox: string): NormalizedMessage {
     fromName: parseDisplayName(fromHeader),
     to: parseAddressList(h.to),
     cc: parseAddressList(h.cc),
+    // Present only on our own sent copies; servers strip it in transit.
+    bcc: parseAddressList(h.bcc),
     subject,
     normalizedSubject: normalizeSubject(subject),
     internalDate: new Date(raw.internalDateMs),

@@ -9,6 +9,8 @@
 
 const QUOTE_MARKERS: RegExp[] = [
   /^On .+ wrote:\s*$/i,
+  /^Begin forwarded message:/i,
+  /^-{3,}\s*Forwarded message\s*-{3,}/i,
   /^-{2,}\s*Original Message\s*-{2,}$/i,
   /^_{5,}$/,
   /^From:\s.+$/i,

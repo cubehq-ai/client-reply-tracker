@@ -149,6 +149,8 @@ export function App() {
             openItem={openItem}
             title={page.title}
             subtitle={page.subtitle}
+            refreshKey={refreshKey}
+            classifier={health?.classifier ?? 'heuristic'}
           />
         )}
         {page.kind === 'clients' && (
@@ -167,7 +169,6 @@ export function App() {
           itemId={openItem}
           user={user}
           clients={clients}
-          users={users}
           onClose={() => setOpenItem(null)}
           onChanged={refresh}
         />

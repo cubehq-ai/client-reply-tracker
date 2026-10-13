@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { google, type gmail_v1 } from 'googleapis';
 import { JWT } from 'google-auth-library';
 import { config } from '../lib/config.js';
+import { htmlToText } from '../lib/html.js';
 import { logger } from '../lib/logger.js';
 import type { DirectoryClient, DirectoryUser, GmailClient, HistoryPage, RawMessage, SendResult } from './types.js';
 
@@ -107,7 +108,7 @@ function toRawMessage(m: gmail_v1.Schema$Message, withBody: boolean): RawMessage
 }
 
 function stripHtml(html: string): string {
-  return html.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return htmlToText(html);
 }
 
 export class RealGmailClient implements GmailClient {
