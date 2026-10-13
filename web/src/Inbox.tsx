@@ -176,13 +176,22 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
         </div>
 
         <div className="toolbar-actions">
-          <input
-            type="search"
-            className="toolbar-search"
-            placeholder="Search subject…"
-            value={filters.search ?? ''}
-            onChange={(e) => set({ search: e.target.value })}
-          />
+          <div className="search-wrap">
+            <svg className="search-icon" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+              <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+            <input
+              type="search"
+              className="toolbar-search"
+              placeholder="Search subjects and summaries…"
+              value={filters.search ?? ''}
+              onChange={(e) => set({ search: e.target.value })}
+            />
+            {filters.search && (
+              <button className="search-clear" onClick={() => set({ search: '' })} title="Clear search">×</button>
+            )}
+          </div>
           {activeCount > 0 && (
             <button
               className="btn small"
