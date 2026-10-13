@@ -67,12 +67,29 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
     }
   }
 
-  const rows = await query<any>(
-    `SELECT id, rfc_message_id, from_email, to_emails, cc_emails, subject, internal_date,
-            direction, body_text_trunc, snippet, is_draft, filter_reason
-       FROM messages WHERE conversation_id = $1 ORDER BY internal_date ASC`,
-    [item.conversation_id],
-  );
+  // These four do not depend on each other; on a remote database the round
+  // trips dominate, so issue them together.
+  const [rows, ctx, ownThread, lock] = await Promise.all([
+    query<any>(
+      `SELECT id, rfc_message_id, from_email, to_emails, cc_emails, subject, internal_date,
+              direction, body_text_trunc, snippet, is_draft, filter_reason
+         FROM messages WHERE conversation_id = $1 ORDER BY internal_date ASC`,
+      [item.conversation_id],
+    ),
+    loadOrgContext(),
+    one<{ gmail_thread_id: string }>(
+      `SELECT mc.gmail_thread_id FROM message_copies mc
+         JOIN messages m ON m.id = mc.message_id
+         JOIN mailboxes mb ON mb.id = mc.mailbox_id
+        WHERE m.conversation_id = $1 AND mb.email = $2 AND mc.deleted = false
+        ORDER BY m.internal_date DESC LIMIT 1`,
+      [item.conversation_id, user.email],
+    ),
+    one<{ user_email: string }>(
+      'SELECT user_email FROM item_locks WHERE item_id = $1 AND expires_at > now()',
+      [itemId],
+    ),
+  ]);
 
   const messages: ThreadMessage[] = rows.map((r) => ({
     id: Number(r.id),
@@ -89,7 +106,6 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
     filterReason: r.filter_reason,
   }));
 
-  const ctx = await loadOrgContext();
   const lastExternal = [...messages].reverse().find((m) => m.direction === 'in' && !m.isDraft);
 
   // Reply-all to the last external message, minus ourselves (SPEC 9).
@@ -104,26 +120,11 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
   const baseSubject = normalizeSubject(item.subject ?? '');
   const replySubject = baseSubject ? `Re: ${item.subject.replace(/^((re|fwd?)\s*:\s*)+/i, '')}` : 'Re:';
 
-  // Gmail needs the thread id from the SENDER's own mailbox (SPEC 9).
-  const ownThread = await one<{ gmail_thread_id: string }>(
-    `SELECT mc.gmail_thread_id FROM message_copies mc
-       JOIN messages m ON m.id = mc.message_id
-       JOIN mailboxes mb ON mb.id = mc.mailbox_id
-      WHERE m.conversation_id = $1 AND mb.email = $2 AND mc.deleted = false
-      ORDER BY m.internal_date DESC LIMIT 1`,
-    [item.conversation_id, user.email],
-  );
-
   const sendAs = [user.email];
   if (user.canSendAsShared || user.role === 'admin') {
     const shared = await query<{ email: string }>("SELECT email FROM mailboxes WHERE kind = 'shared' AND status = 'active'");
     sendAs.push(...shared.map((s) => s.email));
   }
-
-  const lock = await one<{ user_email: string }>(
-    'SELECT user_email FROM item_locks WHERE item_id = $1 AND expires_at > now()',
-    [itemId],
-  );
 
   return {
     itemId: Number(item.id),

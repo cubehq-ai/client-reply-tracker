@@ -95,12 +95,6 @@ export function App() {
         >
           Inbox
         </button>
-        <button
-          className={`nav-item ${isInbox && page.title === 'My items' ? 'active' : ''}`}
-          onClick={() => goInbox({ source: 'gmail', view: 'mine', status: 'needs_reply' }, 'My items', 'Items you own, watch, or whose client you manage.')}
-        >
-          My items
-        </button>
 
         {views.length > 0 && <div className="nav-group">Saved views</div>}
         {views.map((v) => (

@@ -1,4 +1,4 @@
-import { config, useRealGoogle } from '../lib/config.js';
+import { config, fixturesEnabled, useRealGoogle } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { FakeDirectoryClient, FakeGmailClient } from './fake.js';
 import { RealDirectoryClient, RealGmailClient } from './real.js';
@@ -12,9 +12,14 @@ export function getGmailClient(): GmailClient {
     if (useRealGoogle()) {
       logger.info('using the real Gmail backend');
       gmailSingleton = new RealGmailClient();
-    } else {
-      logger.warn({ backend: config.google.backend }, 'using the FAKE Gmail backend (fixtures); set GOOGLE_BACKEND=real with a key file to go live');
+    } else if (fixturesEnabled()) {
+      logger.warn({ backend: config.google.backend }, 'using the FAKE Gmail backend WITH DEMO FIXTURES (FIXTURES_ENABLED=true)');
       gmailSingleton = new FakeGmailClient();
+    } else {
+      // Empty rather than seeded: an unconfigured deployment shows nothing,
+      // not invented mail.
+      logger.warn('no Gmail backend configured — running empty. Authorise domain-wide delegation and set GOOGLE_BACKEND=real.');
+      gmailSingleton = new FakeGmailClient(new Map());
     }
   }
   return gmailSingleton;
@@ -22,7 +27,10 @@ export function getGmailClient(): GmailClient {
 
 export function getDirectoryClient(): DirectoryClient {
   if (!directorySingleton) {
-    directorySingleton = useRealGoogle() ? new RealDirectoryClient() : new FakeDirectoryClient();
+    if (useRealGoogle()) directorySingleton = new RealDirectoryClient();
+    // Without fixtures the directory is empty: mailboxes come from the roster
+    // and from Settings, not from invented users.
+    else directorySingleton = new FakeDirectoryClient(fixturesEnabled() ? undefined : []);
   }
   return directorySingleton;
 }

@@ -204,3 +204,59 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .nav-item .badge { cursor: pointer; }
 .nav-item .badge:hover { background: var(--danger); color: #fff; }
+
+/* ---- form control alignment ----
+   Native selects size their own arrow inconsistently across browsers, which
+   left the dropdowns in the filter bar visibly uneven. Draw the arrow
+   ourselves and give every control one shared height and box model. */
+:root { --control-h: 34px; }
+
+select, input[type="text"], input[type="email"], input[type="password"],
+input[type="datetime-local"], input[type="search"], .btn {
+  height: var(--control-h);
+  padding: 0 11px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  line-height: calc(var(--control-h) - 2px);
+  vertical-align: middle;
+  font-size: 13.5px;
+}
+
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%236b7280' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  cursor: pointer;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) select {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%239099a8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  }
+}
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.btn.small { height: 26px; padding: 0 9px; font-size: 12px; line-height: 24px; }
+textarea { line-height: 1.5; padding: 8px 11px; height: auto; }
+
+/* One baseline for the whole filter bar. */
+.toolbar { align-items: center; row-gap: 8px; }
+.toolbar > * { flex: 0 0 auto; }
+.toolbar input[type="text"] { min-width: 180px; }
+
+/* Chips share the row height family so the two rows read as one block. */
+.chip { height: 28px; padding: 0 11px; line-height: 26px; }
+.chips { row-gap: 6px; }
+
+/* Table cells holding a control should not inherit the cell's line box. */
+td select, td input { height: 28px; line-height: 26px; font-size: 12.5px; }
+
+/* Search sits apart from the dropdowns, pushed to the end of the filter bar. */
+.toolbar-search { margin-left: auto; min-width: 220px; }
+.toolbar-search + .btn { margin-left: 0; }
+@media (max-width: 760px) {
+  .toolbar-search { margin-left: 0; width: 100%; }
+}

@@ -67,7 +67,15 @@ export const config = {
 
   clientDbUrl: str('CLIENT_DB_URL'),
 
-  /** Read-only connection to the internal tool that owns clients + employees. */
+  /** Read-only connection to the internal tool's MongoDB (agency dashboard). */
+  internalMongo: {
+    url: str('INTERNAL_MONGO_URL') || str('MONGO_URL'),
+    db: str('INTERNAL_MONGO_DB') || str('DB_NAME'),
+    clientsCollection: str('INTERNAL_MONGO_CLIENTS_COLLECTION'),
+    employeesCollection: str('INTERNAL_MONGO_EMPLOYEES_COLLECTION'),
+  },
+
+  /** Optional read-only Postgres internal tool (unused when Mongo is set). */
   internalDb: {
     url: str('INTERNAL_DB_URL'),
     clientsQuery: str('INTERNAL_DB_CLIENTS_QUERY'),
@@ -85,6 +93,14 @@ export const config = {
     devUserEmail: str('DEV_USER_EMAIL', 'dev@cubehq.ai'),
   },
 };
+
+/**
+ * Whether the fake Gmail backend seeds demo fixtures. Off by default so a real
+ * deployment never shows invented mailboxes or clients; tests opt in.
+ */
+export function fixturesEnabled(): boolean {
+  return bool('FIXTURES_ENABLED', false);
+}
 
 /** The fake backend is used unless a key file is present AND backend=real. */
 export function useRealGoogle(): boolean {

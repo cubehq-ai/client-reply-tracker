@@ -30,22 +30,41 @@ export function Thread({ itemId, user, clients, users, onClose, onChanged }: {
   const [collision, setCollision] = useState<any>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [panel, setPanel] = useState<'reply' | 'ignore' | 'snooze' | 'link' | 'assign' | null>('reply');
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     let live = true;
     setThread(null);
     setError(null);
-    api.thread(itemId)
+    setRefreshing(false);
+
+    const apply = (t: ThreadView) => {
+      if (!live) return;
+      setThread(t);
+      setTo(t.reply.to.join(', '));
+      setCc(t.reply.cc.join(', '));
+      setSendAs((prev) => prev || t.reply.sendAs[0] || user.email);
+      setExpanded((prev) =>
+        prev.size ? prev : new Set(t.messages.length ? [t.messages[t.messages.length - 1]!.id] : []),
+      );
+    };
+
+    // Render from the database first: every message body is already stored,
+    // so there is nothing to wait for.
+    api.thread(itemId, false)
       .then((t) => {
+        apply(t);
+        // Then re-read the thread from Gmail in the background, so a reply
+        // someone just sent still shows up without holding the UI open.
         if (!live) return;
-        setThread(t);
-        setTo(t.reply.to.join(', '));
-        setCc(t.reply.cc.join(', '));
-        setSendAs(t.reply.sendAs[0] ?? user.email);
-        // Only the newest message starts expanded; older ones collapse.
-        setExpanded(new Set(t.messages.length ? [t.messages[t.messages.length - 1]!.id] : []));
+        setRefreshing(true);
+        api.thread(itemId, true)
+          .then(apply)
+          .catch(() => {})
+          .finally(() => live && setRefreshing(false));
       })
       .catch((e) => live && setError(e.message));
+
     api.act(itemId, 'lock').catch(() => {});
     return () => {
       live = false;
@@ -109,6 +128,7 @@ export function Thread({ itemId, user, clients, users, onClose, onChanged }: {
               <h1 style={{ fontSize: 16 }}>{thread?.subject ?? 'Loading…'}</h1>
               <div className="muted" style={{ fontSize: 12.5 }}>
                 {thread?.clientName ?? 'Unmatched'} · {thread?.state}
+                {refreshing && <span className="muted"> · checking for new replies…</span>}
               </div>
             </div>
             <button className="btn small" onClick={onClose}>Close</button>

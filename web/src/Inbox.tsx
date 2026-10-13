@@ -131,7 +131,13 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
           <option value="normal">Normal</option>
           <option value="low">Low</option>
         </select>
-        <input type="text" placeholder="Search subject…" value={filters.search ?? ''} onChange={(e) => set({ search: e.target.value })} />
+        <input
+          type="search"
+          className="toolbar-search"
+          placeholder="Search subject…"
+          value={filters.search ?? ''}
+          onChange={(e) => set({ search: e.target.value })}
+        />
 
         {activeCount > 0 && (
           <>
@@ -168,10 +174,8 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
               {it.priority === 'high' && <span className="tag high">high</span>}
               {it.overdue && <span className="tag overdue">overdue</span>}
               {it.lowConfidence && <span className="tag low-conf">low confidence</span>}
-              {it.reopenCount > 0 && <span className="tag">reopened ×{it.reopenCount}</span>}
               {it.muted && <span className="tag">muted</span>}
               {it.filterReason && <span className="tag">{it.filterReason}</span>}
-              {it.lockedBy && <span className="tag">{it.lockedBy} replying</span>}
             </div>
             <div className="row-right">
               {timeAgo(it.lastExternalAt)}
