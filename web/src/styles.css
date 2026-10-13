@@ -177,3 +177,30 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .app { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; }
 }
+
+/* channel tabs */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 14px; flex-wrap: wrap; }
+.tab {
+  background: transparent; border: none; border-bottom: 2px solid transparent;
+  padding: 8px 14px; cursor: pointer; color: var(--muted); font-weight: 500; margin-bottom: -1px;
+}
+.tab:hover:not(:disabled) { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tab:disabled { opacity: .45; cursor: not-allowed; }
+
+/* filter chips */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.chip {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
+  padding: 4px 11px; cursor: pointer; font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px;
+}
+.chip:hover { background: var(--panel-2); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.chip-n { font-variant-numeric: tabular-nums; opacity: .7; font-size: 11.5px; }
+.chip.on .chip-n { opacity: .9; }
+.chip-sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+
+.state-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+
+.nav-item .badge { cursor: pointer; }
+.nav-item .badge:hover { background: var(--danger); color: #fff; }

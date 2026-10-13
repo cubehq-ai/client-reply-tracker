@@ -27,7 +27,16 @@ import {
   HttpError, requireRole, requireUser, setSessionCookie, verifyPassword,
 } from './auth.js';
 import { draftReply, getThread, sendReply } from './compose.js';
-import { clientOverview, listQueue, queueCounts, type QueueFilters, type QueueName } from './queues.js';
+import { clientOverview, inboxFacets, listQueue, queueCounts, teamOverview, type QueueFilters, type QueueName } from './queues.js';
+import {
+  addClientDomain, addClientPattern, addMailbox, addMailboxesBulk, createClient, createSavedView,
+  createTeam, deleteSavedView, deleteTeam, listClientsDetailed, listMailboxes, listSavedViews,
+  listTeams, removeClientDomain, removeClientPattern, removeMailbox, renameTeam, testClientPattern,
+  unmatchedSenders, updateMailbox,
+} from './settings.js';
+import { applyRoster } from '../sync/roster.js';
+import { inspectInternalDb, testInternalDb } from '../sync/internalDb.js';
+import { checkUnrespondedItems } from '../sync/hourly.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webDist = join(here, '..', '..', 'web', 'dist');
@@ -105,23 +114,62 @@ export async function buildServer(): Promise<FastifyInstance> {
     return queueCounts(user, view ?? 'all');
   });
 
-  app.get('/api/queues/:name', async (req) => {
-    const user = await requireUser(req);
-    const name = (req.params as any).name as QueueName;
-    const q = req.query as Record<string, string>;
-    const filters: QueueFilters = {
+  function parseFilters(q: Record<string, string>): QueueFilters {
+    return {
       clientId: q.clientId ? Number(q.clientId) : undefined,
       ownerUserId: q.ownerUserId ? Number(q.ownerUserId) : undefined,
+      teamId: q.teamId ? Number(q.teamId) : undefined,
       mailbox: q.mailbox,
       age: q.age as QueueFilters['age'],
       priority: q.priority as QueueFilters['priority'],
       intent: q.intent,
       view: (q.view as QueueFilters['view']) ?? 'all',
       search: q.search,
+      source: (q.source as QueueFilters['source']) ?? undefined,
+      status: q.status ? q.status.split(',').filter(Boolean) : undefined,
+      overdue: q.overdue === 'true',
+      unmatched: q.unmatched === 'true',
+      lowConfidence: q.lowConfidence === 'true',
+      awaitingClient: q.awaitingClient === 'true',
+      muted: q.muted === 'true',
       limit: q.limit ? Number(q.limit) : undefined,
       offset: q.offset ? Number(q.offset) : undefined,
     };
-    return listQueue(user, name, filters);
+  }
+
+  app.get('/api/queues/:name', async (req) => {
+    const user = await requireUser(req);
+    const name = (req.params as any).name as QueueName;
+    return listQueue(user, name, parseFilters(req.query as Record<string, string>));
+  });
+
+  // The unified inbox: one list, everything else is a filter.
+  app.get('/api/inbox', async (req) => {
+    const user = await requireUser(req);
+    const filters = parseFilters(req.query as Record<string, string>);
+    const [list, facets] = await Promise.all([
+      listQueue(user, 'inbox', filters),
+      inboxFacets(user, filters),
+    ]);
+    return { ...list, facets };
+  });
+
+  app.get('/api/teams', async (req) => {
+    const user = await requireUser(req);
+    const view = (req.query as any)?.view as QueueFilters['view'];
+    return { teams: await teamOverview(user, view ?? 'all') };
+  });
+
+  // ---------- saved views ----------
+  app.get('/api/saved-views', async (req) => ({ views: await listSavedViews(await requireUser(req)) }));
+  app.post('/api/saved-views', async (req) => {
+    const user = await requireUser(req);
+    const body = z.object({ name: z.string(), filters: z.record(z.string(), z.any()), shared: z.boolean().optional() }).parse(req.body);
+    return createSavedView(user, body.name, body.filters, body.shared ?? false);
+  });
+  app.delete('/api/saved-views/:id', async (req) => {
+    await deleteSavedView(await requireUser(req), Number((req.params as any).id));
+    return { ok: true };
   });
 
   app.get('/api/clients', async (req) => {
@@ -322,6 +370,142 @@ export async function buildServer(): Promise<FastifyInstance> {
       clientDomains: ctx.clients.byDomain.size,
       clientContacts: ctx.clients.byEmail.size,
     };
+  });
+
+  // ---------- settings: mailboxes, teams, clients ----------
+  const adminOnly = async (req: any) => {
+    const user = await requireUser(req);
+    requireRole(user, ['admin']);
+    return user;
+  };
+
+  app.get('/api/settings/mailboxes', async (req) => {
+    await requireUser(req);
+    return { mailboxes: await listMailboxes(), teams: await listTeams() };
+  });
+
+  app.post('/api/settings/mailboxes', async (req) => {
+    const user = await adminOnly(req);
+    const body = z.object({
+      email: z.string().optional(),
+      emails: z.array(z.string()).optional(),
+      team: z.string().nullable().optional(),
+      kind: z.enum(['user', 'shared']).optional(),
+      role: z.enum(['member', 'manager', 'admin']).optional(),
+    }).parse(req.body);
+
+    if (body.emails?.length) return addMailboxesBulk(user, body.emails, body.team ?? null);
+    if (!body.email) throw new HttpError(400, 'email or emails is required');
+    return addMailbox(user, { email: body.email, team: body.team ?? null, kind: body.kind, role: body.role });
+  });
+
+  app.patch('/api/settings/mailboxes/:id', async (req) => {
+    const user = await adminOnly(req);
+    const body = z.object({
+      team: z.string().nullable().optional(),
+      status: z.enum(['active', 'paused', 'excluded']).optional(),
+      kind: z.enum(['user', 'shared']).optional(),
+    }).parse(req.body);
+    await updateMailbox(user, Number((req.params as any).id), body);
+    return { ok: true };
+  });
+
+  app.delete('/api/settings/mailboxes/:id', async (req) => {
+    const user = await adminOnly(req);
+    return removeMailbox(user, Number((req.params as any).id));
+  });
+
+  app.post('/api/settings/roster', async (req) => {
+    await adminOnly(req);
+    return applyRoster();
+  });
+
+  app.get('/api/settings/teams', async (req) => {
+    await requireUser(req);
+    return { teams: await listTeams() };
+  });
+
+  app.post('/api/settings/teams', async (req) => {
+    const user = await adminOnly(req);
+    const body = z.object({ name: z.string() }).parse(req.body);
+    return createTeam(user, body.name);
+  });
+
+  app.patch('/api/settings/teams/:id', async (req) => {
+    const user = await adminOnly(req);
+    const body = z.object({ name: z.string() }).parse(req.body);
+    await renameTeam(user, Number((req.params as any).id), body.name);
+    return { ok: true };
+  });
+
+  app.delete('/api/settings/teams/:id', async (req) => {
+    const user = await adminOnly(req);
+    await deleteTeam(user, Number((req.params as any).id));
+    return { ok: true };
+  });
+
+  app.get('/api/settings/clients', async (req) => {
+    await requireUser(req);
+    return { clients: await listClientsDetailed(), unmatched: await unmatchedSenders() };
+  });
+
+  app.post('/api/settings/clients', async (req) => {
+    const user = await adminOnly(req);
+    const body = z.object({
+      name: z.string(),
+      tier: z.string().nullable().optional(),
+      domains: z.array(z.string()).optional(),
+      contacts: z.array(z.string()).optional(),
+      accountManagerEmail: z.string().nullable().optional(),
+    }).parse(req.body);
+    return createClient(user, body);
+  });
+
+  app.post('/api/settings/clients/:id/domains', async (req) => {
+    const user = await adminOnly(req);
+    const body = z.object({ domain: z.string() }).parse(req.body);
+    await addClientDomain(user, Number((req.params as any).id), body.domain);
+    return { ok: true };
+  });
+
+  app.delete('/api/settings/client-domains/:id', async (req) => {
+    const user = await adminOnly(req);
+    await removeClientDomain(user, Number((req.params as any).id));
+    return { ok: true };
+  });
+
+  app.post('/api/settings/clients/:id/patterns', async (req) => {
+    const user = await adminOnly(req);
+    const body = z.object({ pattern: z.string(), priority: z.number().optional(), note: z.string().optional() }).parse(req.body);
+    await addClientPattern(user, Number((req.params as any).id), body.pattern, body.priority, body.note);
+    return { ok: true };
+  });
+
+  app.delete('/api/settings/client-patterns/:id', async (req) => {
+    const user = await adminOnly(req);
+    await removeClientPattern(user, Number((req.params as any).id));
+    return { ok: true };
+  });
+
+  app.post('/api/settings/test-pattern', async (req) => {
+    await requireUser(req);
+    const body = z.object({ pattern: z.string() }).parse(req.body);
+    return testClientPattern(body.pattern);
+  });
+
+  app.get('/api/settings/internal-db', async (req) => {
+    await adminOnly(req);
+    return testInternalDb();
+  });
+
+  app.post('/api/settings/internal-db/inspect', async (req) => {
+    await adminOnly(req);
+    return inspectInternalDb();
+  });
+
+  app.post('/api/admin/hourly-status', async (req) => {
+    await adminOnly(req);
+    return checkUnrespondedItems();
   });
 
   // ---------- Gmail push (SPEC 3.2) ----------

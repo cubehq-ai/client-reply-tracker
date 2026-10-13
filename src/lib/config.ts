@@ -61,6 +61,13 @@ export const config = {
 
   clientDbUrl: str('CLIENT_DB_URL'),
 
+  /** Read-only connection to the internal tool that owns clients + employees. */
+  internalDb: {
+    url: str('INTERNAL_DB_URL'),
+    clientsQuery: str('INTERNAL_DB_CLIENTS_QUERY'),
+    employeesQuery: str('INTERNAL_DB_EMPLOYEES_QUERY'),
+  },
+
   safety: {
     sendEnabled: bool('SEND_ENABLED', false),
     gmailWriteEnabled: bool('GMAIL_WRITE_ENABLED', false),

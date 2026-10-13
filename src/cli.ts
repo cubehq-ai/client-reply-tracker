@@ -12,6 +12,9 @@ import { purgeOldBodies } from './sync/retention.js';
 import { sendDailyDigests, sendImmediateAlerts } from './sync/digest.js';
 import { sweepAwaitingClient, sweepStuckSends, wakeSnoozed } from './sync/followup.js';
 import { modelStatus, trainLocalClassifier } from './llm/localClassifier.js';
+import { applyRoster } from './sync/roster.js';
+import { inspectInternalDb, testInternalDb } from './sync/internalDb.js';
+import { checkUnrespondedItems } from './sync/hourly.js';
 
 const commands: Record<string, () => Promise<unknown>> = {
   migrate: () => migrate(),
@@ -31,6 +34,10 @@ const commands: Record<string, () => Promise<unknown>> = {
   sweeps: async () => ({ woken: await wakeSnoozed(), stuckSends: await sweepStuckSends(), awaiting: await sweepAwaitingClient() }),
   'train-classifier': () => trainLocalClassifier(),
   'classifier-status': () => modelStatus(),
+  roster: () => applyRoster(),
+  'inspect-internal-db': () => inspectInternalDb(),
+  'test-internal-db': () => testInternalDb(),
+  'hourly-status': () => checkUnrespondedItems(),
   bootstrap: async () => {
     await migrate();
     await seedReferenceData();

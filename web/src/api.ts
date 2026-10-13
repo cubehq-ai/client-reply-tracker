@@ -9,7 +9,16 @@ export interface QueueItem {
   snoozedUntil: string | null; repliedAt: string | null; repliedBy: string | null;
   reopenCount: number; muted: boolean; filterReason: string | null;
   awaitingClient: boolean; fromEmail: string | null; snippet: string | null;
-  mailboxes: string[]; lockedBy: string | null;
+  mailboxes: string[]; teamName: string | null; lockedBy: string | null;
+}
+
+export interface InboxFacets {
+  status: Record<string, number>;
+  overdue: number;
+  unmatched: number;
+  lowConfidence: number;
+  awaitingClient: number;
+  total: number;
 }
 
 export interface ThreadMessage {
@@ -47,6 +56,22 @@ export const api = {
   counts: (view: string) => request<Record<string, number>>(`/api/counts?view=${view}`),
   queue: (name: string, params: Record<string, string>) =>
     request<{ items: QueueItem[]; total: number }>(`/api/queues/${name}?${new URLSearchParams(params)}`),
+  inbox: (params: Record<string, string>) =>
+    request<{ items: QueueItem[]; total: number; facets: InboxFacets }>(`/api/inbox?${new URLSearchParams(params)}`),
+  teams: (view: string) => request<{ teams: any[] }>(`/api/teams?view=${view}`),
+
+  savedViews: () => request<{ views: any[] }>('/api/saved-views'),
+  createSavedView: (name: string, filters: Record<string, string>, shared = false) =>
+    request<{ id: number }>('/api/saved-views', { method: 'POST', body: JSON.stringify({ name, filters, shared }) }),
+  deleteSavedView: (id: number) => request<any>(`/api/saved-views/${id}`, { method: 'DELETE' }),
+
+  settingsMailboxes: () => request<{ mailboxes: any[]; teams: any[] }>('/api/settings/mailboxes'),
+  settingsClients: () => request<{ clients: any[]; unmatched: any[] }>('/api/settings/clients'),
+  settingsPost: (path: string, body?: unknown) =>
+    request<any>(`/api/settings/${path}`, { method: 'POST', body: JSON.stringify(body ?? {}) }),
+  settingsPatch: (path: string, body?: unknown) =>
+    request<any>(`/api/settings/${path}`, { method: 'PATCH', body: JSON.stringify(body ?? {}) }),
+  settingsDelete: (path: string) => request<any>(`/api/settings/${path}`, { method: 'DELETE' }),
   clients: (view: string) => request<{ clients: any[] }>(`/api/clients?view=${view}`),
   users: () => request<{ users: any[] }>('/api/users'),
   metrics: () => request<any>('/api/metrics'),

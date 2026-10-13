@@ -9,6 +9,7 @@ import { discoverMailboxes } from '../sync/discovery.js';
 import { clearExpiredLocks, sweepAwaitingClient, sweepStuckSends, wakeSnoozed } from '../sync/followup.js';
 import { syncAllMailboxes } from '../sync/mailboxSync.js';
 import { reconcileOpenItems } from '../sync/reconcile.js';
+import { checkUnrespondedItems } from '../sync/hourly.js';
 import { purgeOldBodies } from '../sync/retention.js';
 import { renewWatches } from '../sync/watch.js';
 
@@ -62,6 +63,10 @@ export function startWorker(): void {
     locks: await clearExpiredLocks(),
     alerts: await sendImmediateAlerts(),
   })), { timezone: tz });
+
+  // Hourly: re-read every still-unresponded thread from Gmail and update its
+  // status. Catches replies sent from mailboxes outside the watch list.
+  cron.schedule('5 * * * *', guarded('hourly-status', () => checkUnrespondedItems()), { timezone: tz });
 
   // Daily mailbox discovery (SPEC 3.1).
   cron.schedule('0 2 * * *', guarded('discover', discoverMailboxes), { timezone: tz });

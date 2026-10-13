@@ -3,6 +3,7 @@ import { query, tx } from '../db/pool.js';
 import { config } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { FIXTURE_CLIENTS } from '../gmail/fixtures.js';
+import { InternalDbClientSource } from './internalDb.js';
 
 export interface ClientRecord {
   externalId: string;
@@ -60,7 +61,11 @@ export class FixtureClientSource implements ClientSource {
 }
 
 export function getClientSource(): ClientSource {
-  return config.clientDbUrl ? new DashboardDbClientSource() : new FixtureClientSource();
+  // The internal tool wins when configured; CLIENT_DB_URL remains as the
+  // generic dashboard-DB path from the spec; fixtures otherwise.
+  if (config.internalDb.url) return new InternalDbClientSource();
+  if (config.clientDbUrl) return new DashboardDbClientSource();
+  return new FixtureClientSource();
 }
 
 export interface ClientSyncResult {
