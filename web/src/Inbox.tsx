@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, formatDue, timeAgo, type InboxFacets, type QueueItem, type User } from './api';
+import { MultiSelect } from './MultiSelect';
 
 /** Channel tabs. Email is v1; Slack is the planned second source (SPEC 15). */
 const CHANNELS = [
@@ -56,6 +57,8 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
   const set = (patch: Filters) => setFilters({ ...filters, ...patch });
 
   const hours = data?.facets.thresholdHours ?? 12;
+  /** Comma-separated filter value -> array, for the multi-selects. */
+  const list = (v?: string): string[] => (v ? v.split(',').filter(Boolean) : []);
   const statusSet = new Set((filters.status ?? '').split(',').filter(Boolean));
   const toggleStatus = (key: string) => {
     const next = new Set(statusSet);
@@ -129,31 +132,47 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
 
       <div className="toolbar split">
         <div className="toolbar-filters">
-          <select value={filters.clientId ?? ''} onChange={(e) => set({ clientId: e.target.value })}>
-            <option value="">All clients</option>
-            {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          <select value={filters.teamId ?? ''} onChange={(e) => set({ teamId: e.target.value })}>
-            <option value="">All teams</option>
-            {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
-          <select value={filters.ownerUserId ?? ''} onChange={(e) => set({ ownerUserId: e.target.value })}>
-            <option value="">Any owner</option>
-            {users.map((u) => <option key={u.id} value={u.id}>{u.email}</option>)}
-          </select>
-          <select value={filters.age ?? ''} onChange={(e) => set({ age: e.target.value })}>
-            <option value="">Any age</option>
-            <option value="4h">Under 4h</option>
-            <option value="24h">4–24h</option>
-            <option value="3d">1–3 days</option>
-            <option value="older">Over 3 days</option>
-          </select>
-          <select value={filters.priority ?? ''} onChange={(e) => set({ priority: e.target.value })}>
-            <option value="">Any priority</option>
-            <option value="high">High</option>
-            <option value="normal">Normal</option>
-            <option value="low">Low</option>
-          </select>
+          <MultiSelect
+            label="Client"
+            searchable
+            options={clients.map((c) => ({ value: String(c.id), label: c.name }))}
+            selected={list(filters.clientIds)}
+            onChange={(v) => set({ clientIds: v.join(',') })}
+          />
+          <MultiSelect
+            label="Team"
+            options={teams.map((t) => ({ value: String(t.id), label: t.name }))}
+            selected={list(filters.teamIds)}
+            onChange={(v) => set({ teamIds: v.join(',') })}
+          />
+          <MultiSelect
+            label="Recipient"
+            searchable
+            options={users.map((u) => ({ value: String(u.id), label: u.email }))}
+            selected={list(filters.ownerUserIds)}
+            onChange={(v) => set({ ownerUserIds: v.join(',') })}
+          />
+          <MultiSelect
+            label="Age"
+            options={[
+              { value: '4h', label: 'Under 4 hours' },
+              { value: '24h', label: '4 to 24 hours' },
+              { value: '3d', label: '1 to 3 days' },
+              { value: 'older', label: 'Over 3 days' },
+            ]}
+            selected={list(filters.ages)}
+            onChange={(v) => set({ ages: v.join(',') })}
+          />
+          <MultiSelect
+            label="Priority"
+            options={[
+              { value: 'high', label: 'High' },
+              { value: 'normal', label: 'Normal' },
+              { value: 'low', label: 'Low' },
+            ]}
+            selected={list(filters.priorities)}
+            onChange={(v) => set({ priorities: v.join(',') })}
+          />
         </div>
 
         <div className="toolbar-actions">

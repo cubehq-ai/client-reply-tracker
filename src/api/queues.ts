@@ -7,13 +7,16 @@ export type QueueName =
   | 'needs_reply' | 'overdue' | 'unmatched' | 'low_confidence' | 'fyi'
   | 'snoozed' | 'replied' | 'awaiting_client' | 'ignored' | 'filtered' | 'all';
 
+export type AgeBucket = '4h' | '24h' | '3d' | 'older';
+
 export interface QueueFilters {
-  clientId?: number;
-  ownerUserId?: number;
-  teamId?: number;
+  /** Every list filter is multi-select; an empty list means "no restriction". */
+  clientIds?: number[];
+  ownerUserIds?: number[];
+  teamIds?: number[];
   mailbox?: string;
-  age?: '4h' | '24h' | '3d' | 'older';
-  priority?: 'high' | 'normal' | 'low';
+  ages?: AgeBucket[];
+  priorities?: ('high' | 'normal' | 'low')[];
   intent?: string;
   view?: 'mine' | 'team' | 'all';
   search?: string;
@@ -147,7 +150,7 @@ function orderClause(queue: QueueName): string {
   }
 }
 
-function ageClause(age: QueueFilters['age']): string {
+function ageClause(age: AgeBucket): string {
   switch (age) {
     case '4h': return "i.last_external_at > now() - interval '4 hours'";
     case '24h': return "i.last_external_at BETWEEN now() - interval '24 hours' AND now() - interval '4 hours'";
@@ -155,6 +158,12 @@ function ageClause(age: QueueFilters['age']): string {
     case 'older': return "i.last_external_at < now() - interval '3 days'";
     default: return 'TRUE';
   }
+}
+
+/** Selected age buckets are alternatives, so they OR together. */
+function agesClause(ages: AgeBucket[] | undefined): string | null {
+  if (!ages?.length) return null;
+  return `(${ages.map(ageClause).join(' OR ')})`;
 }
 
 export async function listQueue(
@@ -165,11 +174,12 @@ export async function listQueue(
   const params: unknown[] = [];
   const where = [queueClause(queue, params), visibilityClause(user, filters.view, params)];
 
-  if (filters.clientId !== undefined) { params.push(filters.clientId); where.push(`i.client_id = $${params.length}`); }
-  if (filters.ownerUserId !== undefined) { params.push(filters.ownerUserId); where.push(`i.owner_user_id = $${params.length}`); }
-  if (filters.priority) { params.push(filters.priority); where.push(`i.priority = $${params.length}`); }
+  if (filters.clientIds?.length) { params.push(filters.clientIds); where.push(`i.client_id = ANY($${params.length}::bigint[])`); }
+  if (filters.ownerUserIds?.length) { params.push(filters.ownerUserIds); where.push(`i.owner_user_id = ANY($${params.length}::bigint[])`); }
+  if (filters.priorities?.length) { params.push(filters.priorities); where.push(`i.priority = ANY($${params.length}::text[])`); }
   if (filters.intent) { params.push(filters.intent); where.push(`i.intent = $${params.length}`); }
-  if (filters.age) where.push(ageClause(filters.age));
+  const ages = agesClause(filters.ages);
+  if (ages) where.push(ages);
   if (filters.mailbox) {
     params.push(filters.mailbox.toLowerCase());
     where.push(`EXISTS (SELECT 1 FROM message_copies mc JOIN messages m ON m.id = mc.message_id
@@ -181,9 +191,9 @@ export async function listQueue(
     where.push(`(c.subject ILIKE $${params.length} OR i.summary ILIKE $${params.length})`);
   }
 
-  if (filters.teamId !== undefined) {
-    params.push(filters.teamId);
-    where.push(`(u.team_id = $${params.length} OR mb_team.team_id = $${params.length})`);
+  if (filters.teamIds?.length) {
+    params.push(filters.teamIds);
+    where.push(`(u.team_id = ANY($${params.length}::bigint[]) OR mb_team.team_id = ANY($${params.length}::bigint[]))`);
   }
   if (filters.source) { params.push(filters.source); where.push(`i.source = $${params.length}`); }
   if (filters.status?.length) { params.push(filters.status); where.push(`i.state = ANY($${params.length}::text[])`); }
@@ -340,13 +350,14 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {})
   const params: unknown[] = [];
   const where = ["i.state <> 'archived'", visibilityClause(user, filters.view, params)];
 
-  if (filters.clientId !== undefined) { params.push(filters.clientId); where.push(`i.client_id = $${params.length}`); }
-  if (filters.ownerUserId !== undefined) { params.push(filters.ownerUserId); where.push(`i.owner_user_id = $${params.length}`); }
-  if (filters.teamId !== undefined) { params.push(filters.teamId); where.push(`u.team_id = $${params.length}`); }
-  if (filters.priority) { params.push(filters.priority); where.push(`i.priority = $${params.length}`); }
+  if (filters.clientIds?.length) { params.push(filters.clientIds); where.push(`i.client_id = ANY($${params.length}::bigint[])`); }
+  if (filters.ownerUserIds?.length) { params.push(filters.ownerUserIds); where.push(`i.owner_user_id = ANY($${params.length}::bigint[])`); }
+  if (filters.teamIds?.length) { params.push(filters.teamIds); where.push(`u.team_id = ANY($${params.length}::bigint[])`); }
+  if (filters.priorities?.length) { params.push(filters.priorities); where.push(`i.priority = ANY($${params.length}::text[])`); }
   if (filters.intent) { params.push(filters.intent); where.push(`i.intent = $${params.length}`); }
   if (filters.source) { params.push(filters.source); where.push(`i.source = $${params.length}`); }
-  if (filters.age) where.push(ageClause(filters.age));
+  const ageFacet = agesClause(filters.ages);
+  if (ageFacet) where.push(ageFacet);
   if (filters.search) { params.push(`%${filters.search}%`); where.push(`(c.subject ILIKE $${params.length} OR i.summary ILIKE $${params.length})`); }
 
   params.push(config.classifier.threshold);

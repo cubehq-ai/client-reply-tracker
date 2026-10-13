@@ -114,14 +114,20 @@ export async function buildServer(): Promise<FastifyInstance> {
     return queueCounts(user, view ?? 'all');
   });
 
+  /** Comma-separated query params, since every list filter is multi-select. */
+  const ids = (v?: string): number[] | undefined =>
+    v ? v.split(',').map(Number).filter(Number.isFinite) : undefined;
+  const strs = (v?: string): any[] | undefined =>
+    v ? v.split(',').filter(Boolean) : undefined;
+
   function parseFilters(q: Record<string, string>): QueueFilters {
     return {
-      clientId: q.clientId ? Number(q.clientId) : undefined,
-      ownerUserId: q.ownerUserId ? Number(q.ownerUserId) : undefined,
-      teamId: q.teamId ? Number(q.teamId) : undefined,
+      clientIds: ids(q.clientIds ?? q.clientId),
+      ownerUserIds: ids(q.ownerUserIds ?? q.ownerUserId),
+      teamIds: ids(q.teamIds ?? q.teamId),
       mailbox: q.mailbox,
-      age: q.age as QueueFilters['age'],
-      priority: q.priority as QueueFilters['priority'],
+      ages: strs(q.ages ?? q.age),
+      priorities: strs(q.priorities ?? q.priority),
       intent: q.intent,
       view: (q.view as QueueFilters['view']) ?? 'all',
       search: q.search,

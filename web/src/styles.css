@@ -428,3 +428,42 @@ td > input[type="text"] { display: inline-block; }
   color: var(--accent); font-size: 12px; font-weight: 600; padding: 0 4px;
 }
 .field-add:hover { text-decoration: underline; }
+
+/* ---- multi-select filter ---- */
+.multiselect { position: relative; display: inline-block; }
+.multiselect-trigger {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: var(--control-h); padding: 0 11px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer; font-size: 13.5px; color: var(--text); white-space: nowrap;
+}
+.multiselect-trigger:hover { background: var(--panel-2); }
+.multiselect-trigger.has-selection { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.multiselect-count {
+  background: var(--accent); color: #fff; border-radius: 999px;
+  font-size: 11px; padding: 0 6px; line-height: 16px; min-width: 16px; text-align: center;
+}
+.multiselect-caret { opacity: .55; flex: none; }
+
+.multiselect-panel {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
+  min-width: 240px; max-width: 340px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .16); overflow: hidden;
+}
+.multiselect-search {
+  width: 100%; border: none; border-bottom: 1px solid var(--border);
+  border-radius: 0; height: 34px;
+}
+.multiselect-search:focus { outline: none; }
+.multiselect-list { max-height: 280px; overflow-y: auto; }
+.multiselect-option {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 11px; cursor: pointer; font-size: 13px;
+}
+.multiselect-option:hover { background: var(--panel-2); }
+.multiselect-option input { width: 14px; height: 14px; margin: 0; flex: none; accent-color: var(--accent); }
+.multiselect-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.multiselect-all { border-bottom: 1px solid var(--border); font-weight: 600; }
+.multiselect-opt-n { margin-left: auto; font-weight: 400; color: var(--muted); font-size: 11.5px; }
+.multiselect-empty { padding: 12px; color: var(--muted); font-size: 12.5px; text-align: center; }
