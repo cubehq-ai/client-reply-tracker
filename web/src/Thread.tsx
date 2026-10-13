@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, timeAgo, type ThreadView, type User } from './api';
+import { splitQuoted } from './quoted';
 
 const IGNORE_REASONS = [
   { value: 'not_needed', label: 'No reply needed' },
@@ -148,32 +149,18 @@ export function Thread({ itemId, user, clients, users, onClose, onChanged }: {
 
           {!thread && !error && <div className="empty">Loading thread…</div>}
 
-          {thread?.messages.map((m) => {
-            const open = expanded.has(m.id);
-            return (
-              <div key={m.id} className={`msg ${m.direction === 'out' ? 'out' : ''}`}>
-                <div className="msg-head">
-                  <span>
-                    <strong>{m.from}</strong>
-                    {m.isDraft && <span className="tag" style={{ marginLeft: 6 }}>draft</span>}
-                    {m.filterReason && <span className="tag" style={{ marginLeft: 6 }}>{m.filterReason}</span>}
-                  </span>
-                  <span className="muted">{new Date(m.date).toLocaleString()}</span>
-                </div>
-                <div
-                  className={`msg-body ${open ? '' : 'collapsed'}`}
-                  onClick={() => setExpanded((s) => {
-                    const next = new Set(s);
-                    open ? next.delete(m.id) : next.add(m.id);
-                    return next;
-                  })}
-                  style={{ cursor: 'pointer' }}
-                >
-                  {m.body || m.snippet || '(no body stored)'}
-                </div>
-              </div>
-            );
-          })}
+          {thread?.messages.map((m) => (
+            <Message
+              key={m.id}
+              message={m}
+              open={expanded.has(m.id)}
+              onToggle={() => setExpanded((prev) => {
+                const next = new Set(prev);
+                next.has(m.id) ? next.delete(m.id) : next.add(m.id);
+                return next;
+              })}
+            />
+          ))}
         </div>
 
         <div className="drawer-foot">
@@ -289,6 +276,46 @@ function LinkPanel({ clients, busy, onLink }: { clients: any[]; busy: boolean; o
         <option value="domain">Link the whole domain</option>
       </select>
       <button className="btn primary" disabled={busy || !clientId} onClick={() => onLink(Number(clientId), mode)}>Link</button>
+    </div>
+  );
+}
+
+function Message({ message, open, onToggle }: {
+  message: ThreadView['messages'][number];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const [showQuoted, setShowQuoted] = useState(false);
+  const raw = message.body || message.snippet || '';
+  const { visible, quoted } = splitQuoted(raw);
+
+  return (
+    <div className={`msg ${message.direction === 'out' ? 'out' : ''}`}>
+      <div className="msg-head">
+        <span>
+          <strong>{message.from}</strong>
+          {message.isDraft && <span className="tag" style={{ marginLeft: 6 }}>draft</span>}
+          {message.filterReason && <span className="tag" style={{ marginLeft: 6 }}>{message.filterReason}</span>}
+        </span>
+        <span className="muted">{new Date(message.date).toLocaleString()}</span>
+      </div>
+
+      <div className={`msg-body ${open ? '' : 'collapsed'}`} onClick={onToggle} style={{ cursor: 'pointer' }}>
+        {visible || <span className="muted">(no new text in this message)</span>}
+      </div>
+
+      {quoted && (
+        <div className="msg-quoted">
+          <button
+            className="quoted-toggle"
+            onClick={(e) => { e.stopPropagation(); setShowQuoted((v) => !v); }}
+            title={showQuoted ? 'Hide quoted history' : 'Show quoted history'}
+          >
+            {showQuoted ? 'Hide quoted text' : '••• Show quoted text'}
+          </button>
+          {showQuoted && <pre className="quoted-body">{quoted}</pre>}
+        </div>
+      )}
     </div>
   );
 }

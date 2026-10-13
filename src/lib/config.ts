@@ -33,6 +33,19 @@ export const config = {
     adminSubject: str('GOOGLE_ADMIN_SUBJECT'),
     /** "real" only takes effect when a key file is actually configured. */
     backend: str('GOOGLE_BACKEND', 'fake') as 'real' | 'fake',
+    /**
+     * Scopes to request when impersonating a mailbox. Domain-wide delegation
+     * rejects the whole token request if ANY requested scope is not authorised,
+     * so this must match the Admin console entry exactly — asking for more is
+     * not harmless. gmail.modify already covers reading and drafts.
+     */
+    gmailScopes: list('GOOGLE_GMAIL_SCOPES', [
+      'https://www.googleapis.com/auth/gmail.modify',
+      'https://www.googleapis.com/auth/gmail.send',
+    ]).map((s) => s.trim()),
+    directoryScopes: list('GOOGLE_DIRECTORY_SCOPES', [
+      'https://www.googleapis.com/auth/admin.directory.user.readonly',
+    ]).map((s) => s.trim()),
   },
 
   org: {

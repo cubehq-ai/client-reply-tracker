@@ -11,12 +11,8 @@ import { config } from '../lib/config.js';
  * Admin console -> Security -> API controls -> Domain-wide delegation.
  */
 
-const GMAIL_SCOPES = [
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.send',
-  'https://www.googleapis.com/auth/gmail.compose',
-];
-const DIRECTORY_SCOPES = ['https://www.googleapis.com/auth/admin.directory.user.readonly'];
+const GMAIL_SCOPES = config.google.gmailScopes;
+const DIRECTORY_SCOPES = config.google.directoryScopes;
 
 export interface GoogleCheck {
   keyFile: { found: boolean; path: string; clientEmail?: string; clientId?: string; projectId?: string; error?: string };

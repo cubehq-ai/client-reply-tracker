@@ -5,13 +5,11 @@ import { config } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import type { DirectoryClient, DirectoryUser, GmailClient, HistoryPage, RawMessage, SendResult } from './types.js';
 
-const GMAIL_SCOPES = [
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.send',
-  'https://www.googleapis.com/auth/gmail.compose',
-  'https://www.googleapis.com/auth/gmail.modify',
-];
-const DIRECTORY_SCOPES = ['https://www.googleapis.com/auth/admin.directory.user.readonly'];
+// Requested scopes come from config so they can be matched exactly to what the
+// Workspace admin authorised; an unauthorised extra scope fails the whole
+// token request, not just that capability.
+const GMAIL_SCOPES = config.google.gmailScopes;
+const DIRECTORY_SCOPES = config.google.directoryScopes;
 
 interface KeyFile { client_email: string; private_key: string }
 

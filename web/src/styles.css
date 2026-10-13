@@ -340,3 +340,18 @@ th:first-child, td:first-child { text-align: left; }
 td .btn + .btn { margin-left: 6px; }
 td select, td input { margin: 0 auto; }
 td > input[type="text"] { display: inline-block; }
+
+/* Quoted history is collapsed by default: a reply should read as what was
+   written now, not as the whole thread repeated. */
+.msg-quoted { border-top: 1px solid var(--border); }
+.msg.out .msg-quoted { border-top-color: rgba(128, 128, 128, .2); }
+.quoted-toggle {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--muted); font-size: 12px; padding: 7px 12px; width: 100%; text-align: left;
+}
+.quoted-toggle:hover { color: var(--text); background: var(--panel-2); }
+.quoted-body {
+  margin: 0; padding: 0 12px 11px; white-space: pre-wrap; word-break: break-word;
+  font-family: inherit; font-size: 12.5px; color: var(--muted);
+  border-left: 2px solid var(--border); margin-left: 12px;
+}
