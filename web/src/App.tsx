@@ -182,7 +182,7 @@ function ClientsView({ clients, onPick }: { clients: any[]; onPick: (id: number)
       <div className="header"><div><h1>Clients</h1><div className="subtitle">Open volume, age and SLA breaches per client. Click through to that client's mail.</div></div></div>
       <div className="card">
         <table>
-          <thead><tr><th>Client</th><th>Tier</th><th>Account manager</th><th className="num">Open</th><th className="num">Overdue</th><th>Oldest open</th></tr></thead>
+          <thead><tr><th>Client</th><th>Services</th><th>Account manager</th><th className="num">Open</th><th className="num">Overdue</th><th>Oldest open</th></tr></thead>
           <tbody>
             {clients.map((c) => (
               <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => onPick(c.id)}>

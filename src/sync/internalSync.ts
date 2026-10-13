@@ -43,6 +43,16 @@ interface MongoClient {
   notification_emails?: unknown;
 }
 
+/** `service_type` is a list of services on the dashboard, not a single value. */
+function serviceLabel(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    const parts = value.map((v) => String(v).trim()).filter(Boolean);
+    return parts.length ? parts.join(', ') : null;
+  }
+  const s = typeof value === 'string' ? value.trim() : '';
+  return s || null;
+}
+
 async function freeDomainSet(): Promise<Set<string>> {
   const rows = await query<{ domain: string }>('SELECT domain FROM free_email_domains');
   return new Set(rows.map((r) => r.domain.toLowerCase()));
@@ -113,7 +123,7 @@ export async function buildClientRecords(): Promise<{ records: ClientRecord[]; s
     records.push({
       externalId: `agency:${key}`,
       name: (doc.name ?? '').trim(),
-      tier: doc.service_type ?? null,
+      tier: serviceLabel(doc.service_type),
       accountManagerEmail: null,
       domains,
       // Exact addresses always map, including on a shared or free domain.

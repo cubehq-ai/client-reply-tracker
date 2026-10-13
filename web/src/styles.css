@@ -330,3 +330,13 @@ td select, td input { height: 28px; line-height: 26px; font-size: 12.5px; }
   background: var(--panel-2);
   border-bottom: 1px solid var(--border);
 }
+
+/* ---- tables ----
+   Headings and cells centre together, so columns read as one block. */
+th, td { text-align: center; vertical-align: middle; }
+td.num, th.num { text-align: center; }
+/* The leading identifier column stays left so a column of emails is scannable. */
+th:first-child, td:first-child { text-align: left; }
+td .btn + .btn { margin-left: 6px; }
+td select, td input { margin: 0 auto; }
+td > input[type="text"] { display: inline-block; }

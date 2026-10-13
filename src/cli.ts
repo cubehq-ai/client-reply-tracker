@@ -15,6 +15,7 @@ import { modelStatus, trainLocalClassifier } from './llm/localClassifier.js';
 import { applyRoster } from './sync/roster.js';
 import { inspectInternalDb, testInternalDb } from './sync/internalDb.js';
 import { checkInternalDbReadOnly } from './sync/internalDbGuard.js';
+import { checkGoogleAccess } from './sync/googleCheck.js';
 import { checkMongoCredential, inspectInternalMongo } from './sync/internalMongo.js';
 import { buildClientRecords, markChurnedClients, syncTeamsFromInternal } from './sync/internalSync.js';
 import { checkUnrespondedItems } from './sync/hourly.js';
@@ -41,6 +42,10 @@ const commands: Record<string, () => Promise<unknown>> = {
   'inspect-internal-db': () => inspectInternalDb(),
   'test-internal-db': () => testInternalDb(),
   'check-internal-db-readonly': () => checkInternalDbReadOnly(),
+  'check-google': async () => {
+    const rows = await query<{ email: string }>("SELECT email FROM mailboxes WHERE status = 'active' ORDER BY email LIMIT 3");
+    return checkGoogleAccess(rows.map((r) => r.email));
+  },
   'inspect-internal-mongo': () => inspectInternalMongo(),
   'check-mongo-credential': () => checkMongoCredential(),
   'preview-internal-clients': async () => (await buildClientRecords()).stats,

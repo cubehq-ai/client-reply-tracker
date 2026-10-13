@@ -74,9 +74,6 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
             <button className="btn small" onClick={() => { setAdding(adding === '__team' ? null : '__team'); setDraft(''); }}>
               {adding === '__team' ? 'Cancel' : '+ Add team'}
             </button>
-            <button className="btn small" onClick={() => act(() => api.settingsPost('roster'), 'Default roster applied.')}>
-              Re-apply roster
-            </button>
           </span>
         </div>
 
@@ -306,7 +303,7 @@ function Clients({ onChanged }: { onChanged: () => void }) {
       <div className="card">
         <div className="section-title">Clients</div>
         <table>
-          <thead><tr><th>Client</th><th>Tier</th><th>Domains</th><th>Contacts</th><th>Patterns</th></tr></thead>
+          <thead><tr><th>Client</th><th>Services</th><th>Domains</th><th>Contacts</th><th>Patterns</th></tr></thead>
           <tbody>
             {data.clients.map((c) => (
               <tr key={c.id}>
