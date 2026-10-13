@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, formatDue, timeAgo, type InboxFacets, type QueueItem, type User } from './api';
 
-/** Channel tabs. Only Email exists in v1; the others are visibly not ready. */
+/** Channel tabs. Email is v1; Slack is the planned second source (SPEC 15). */
 const CHANNELS = [
   { key: 'gmail', label: 'Email', ready: true },
   { key: 'slack', label: 'Slack', ready: false },
-  { key: 'whatsapp', label: 'WhatsApp', ready: false },
 ];
 
 const STATUSES = [
@@ -105,60 +104,67 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
         ))}
       </div>
 
-      <div className="toolbar">
-        <select value={filters.clientId ?? ''} onChange={(e) => set({ clientId: e.target.value })}>
-          <option value="">All clients</option>
-          {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <select value={filters.teamId ?? ''} onChange={(e) => set({ teamId: e.target.value })}>
-          <option value="">All teams</option>
-          {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-        </select>
-        <select value={filters.ownerUserId ?? ''} onChange={(e) => set({ ownerUserId: e.target.value })}>
-          <option value="">Any owner</option>
-          {users.map((u) => <option key={u.id} value={u.id}>{u.email}</option>)}
-        </select>
-        <select value={filters.age ?? ''} onChange={(e) => set({ age: e.target.value })}>
-          <option value="">Any age</option>
-          <option value="4h">Under 4h</option>
-          <option value="24h">4–24h</option>
-          <option value="3d">1–3 days</option>
-          <option value="older">Over 3 days</option>
-        </select>
-        <select value={filters.priority ?? ''} onChange={(e) => set({ priority: e.target.value })}>
-          <option value="">Any priority</option>
-          <option value="high">High</option>
-          <option value="normal">Normal</option>
-          <option value="low">Low</option>
-        </select>
-        <input
-          type="search"
-          className="toolbar-search"
-          placeholder="Search subject…"
-          value={filters.search ?? ''}
-          onChange={(e) => set({ search: e.target.value })}
-        />
+      <div className="toolbar split">
+        <div className="toolbar-filters">
+          <select value={filters.clientId ?? ''} onChange={(e) => set({ clientId: e.target.value })}>
+            <option value="">All clients</option>
+            {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <select value={filters.teamId ?? ''} onChange={(e) => set({ teamId: e.target.value })}>
+            <option value="">All teams</option>
+            {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <select value={filters.ownerUserId ?? ''} onChange={(e) => set({ ownerUserId: e.target.value })}>
+            <option value="">Any owner</option>
+            {users.map((u) => <option key={u.id} value={u.id}>{u.email}</option>)}
+          </select>
+          <select value={filters.age ?? ''} onChange={(e) => set({ age: e.target.value })}>
+            <option value="">Any age</option>
+            <option value="4h">Under 4h</option>
+            <option value="24h">4–24h</option>
+            <option value="3d">1–3 days</option>
+            <option value="older">Over 3 days</option>
+          </select>
+          <select value={filters.priority ?? ''} onChange={(e) => set({ priority: e.target.value })}>
+            <option value="">Any priority</option>
+            <option value="high">High</option>
+            <option value="normal">Normal</option>
+            <option value="low">Low</option>
+          </select>
+        </div>
 
-        {activeCount > 0 && (
-          <>
-            <button className="btn small" onClick={() => setFilters({ source: filters.source ?? 'gmail', view: filters.view ?? 'all' })}>
-              Clear {activeCount}
-            </button>
-            <button
-              className="btn small"
-              disabled={saving}
-              onClick={async () => {
-                const name = window.prompt('Name this view');
-                if (!name) return;
-                setSaving(true);
-                try { await api.createSavedView(name, filters); window.dispatchEvent(new Event('rq:views-changed')); }
-                finally { setSaving(false); }
-              }}
-            >
-              Save view
-            </button>
-          </>
-        )}
+        <div className="toolbar-actions">
+          <input
+            type="search"
+            className="toolbar-search"
+            placeholder="Search subject…"
+            value={filters.search ?? ''}
+            onChange={(e) => set({ search: e.target.value })}
+          />
+          {activeCount > 0 && (
+            <>
+              <button
+                className="btn small"
+                onClick={() => setFilters({ source: filters.source ?? 'gmail', view: filters.view ?? 'all' })}
+              >
+                Clear {activeCount}
+              </button>
+              <button
+                className="btn small"
+                disabled={saving}
+                onClick={async () => {
+                  const name = window.prompt('Name this view');
+                  if (!name) return;
+                  setSaving(true);
+                  try { await api.createSavedView(name, filters); window.dispatchEvent(new Event('rq:views-changed')); }
+                  finally { setSaving(false); }
+                }}
+              >
+                Save view
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {error && <div className="banner danger">{error}</div>}

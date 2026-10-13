@@ -17,8 +17,8 @@ export interface QueueFilters {
   intent?: string;
   view?: 'mine' | 'team' | 'all';
   search?: string;
-  /** Channel tab. Only gmail exists in v1. */
-  source?: 'gmail' | 'slack' | 'whatsapp';
+  /** Channel tab. Only gmail exists in v1; Slack is planned (SPEC 15).  */
+  source?: 'gmail' | 'slack';
   /** One or more item states. Empty means "every active state". */
   status?: string[];
   /** Overlay flags, each narrowing the list rather than replacing it. */
