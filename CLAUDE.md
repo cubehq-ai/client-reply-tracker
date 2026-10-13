@@ -25,10 +25,46 @@ Full spec: `docs/SPEC.md` (the unresponded-inbox-gmail-spec.md file). Read it fu
 - Create realistic fixture data: several clients and domains, client threads, internal replies from a different mailbox, promotional mail, auto-replies, bounces, a personal-Gmail client, a "Thanks!" FYI, and a reopened thread.
 - Use `docker compose` for local Postgres/Redis. If Docker is unavailable, fall back to SQLite and log it.
 
+## Databases — read vs write (non-negotiable)
+
+There are two databases and they are not interchangeable.
+
+**`DATABASE_URL` — this tool's own database. Writes allowed.**
+Schema, migrations, items, messages, clients, settings. Owned by this project.
+Migrate it, truncate it, reseed it freely.
+
+**`INTERNAL_DB_URL` — the company's internal tool. READ ONLY. Never write.**
+Source of truth for employees and clients, owned by another team. This project
+is a guest with SELECT rights and nothing more.
+
+Rules:
+- Never write an INSERT, UPDATE, DELETE, TRUNCATE, ALTER, DROP, CREATE, GRANT
+  or any other statement that modifies state against `INTERNAL_DB_URL`. Not to
+  "fix" a row, not to add an index, not to create a view, not temporarily.
+- Never run a migration against it. It has no migrations directory here and
+  never will.
+- All access goes through `src/sync/internalDb.ts`, whose `readOnly()` helper
+  wraps every statement in `BEGIN TRANSACTION READ ONLY`. Do not add a second
+  connection path, do not construct a `pg.Pool` against it elsewhere, and do
+  not remove or weaken the guard in `src/sync/internalDbGuard.ts`.
+- Never set `INTERNAL_DB_ALLOW_WRITABLE_CREDENTIAL=true`. That switch exists
+  for a human to accept a risk, not for the agent to clear its own path.
+- The credential lives in `.env.internal`, which is denied to Read. Do not try
+  to recover it by other means — not `cat`, not a script that prints
+  `process.env`, not a log line, not an error message.
+- If reading it fails, report the failure. Do not work around it.
+- To change what is read, change the SQL in `INTERNAL_DB_CLIENTS_QUERY` /
+  `INTERNAL_DB_EMPLOYEES_QUERY` or the defaults in `internalDb.ts`. Both must
+  stay pure SELECTs; a CTE containing a writable statement is still a write.
+
+If a task seems to require writing to the internal database, it is the wrong
+approach. Mirror what is needed into this tool's own database instead.
+
 ## Safety rules (non-negotiable)
 - Sending is dry-run by default: `SEND_ENABLED=false` logs the full MIME message instead of calling Gmail. Never send real email during development.
 - Never modify Gmail labels, mark as read, or delete anything unless `GMAIL_WRITE_ENABLED=true`.
-- Never read `.env` files, never print secrets, never commit keys.
+- Never read `.env` or `.env.internal`, never print secrets, never commit keys.
+- Treat `INTERNAL_DB_URL` as read-only in every circumstance (see the database section above).
 - No real network calls to Google, Slack or LLM providers in tests.
 
 ## When to stop

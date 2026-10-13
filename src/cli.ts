@@ -14,6 +14,7 @@ import { sweepAwaitingClient, sweepStuckSends, wakeSnoozed } from './sync/follow
 import { modelStatus, trainLocalClassifier } from './llm/localClassifier.js';
 import { applyRoster } from './sync/roster.js';
 import { inspectInternalDb, testInternalDb } from './sync/internalDb.js';
+import { checkInternalDbReadOnly } from './sync/internalDbGuard.js';
 import { checkUnrespondedItems } from './sync/hourly.js';
 
 const commands: Record<string, () => Promise<unknown>> = {
@@ -37,6 +38,7 @@ const commands: Record<string, () => Promise<unknown>> = {
   roster: () => applyRoster(),
   'inspect-internal-db': () => inspectInternalDb(),
   'test-internal-db': () => testInternalDb(),
+  'check-internal-db-readonly': () => checkInternalDbReadOnly(),
   'hourly-status': () => checkUnrespondedItems(),
   bootstrap: async () => {
     await migrate();

@@ -2,6 +2,7 @@ node_modules/
 dist/
 web/dist/
 .env
+.env.internal
 *.json.key
 spend-monitor-*.json
 secrets/

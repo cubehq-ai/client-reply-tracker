@@ -2,6 +2,7 @@ import pg from 'pg';
 import { config } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import type { ClientRecord, ClientSource } from './clients.js';
+import { assertDistinctFromTrackerDb, assertInternalDbReadOnly } from './internalDbGuard.js';
 
 /**
  * Reads clients (and optionally employees) from the internal tool's database.
@@ -12,6 +13,8 @@ import type { ClientRecord, ClientSource } from './clients.js';
 
 function pool(): pg.Pool {
   if (!config.internalDb.url) throw new Error('INTERNAL_DB_URL is not set');
+  // Cheap, synchronous: never let the two databases be the same one.
+  assertDistinctFromTrackerDb();
   return new pg.Pool({
     connectionString: config.internalDb.url,
     max: 2,
@@ -19,7 +22,14 @@ function pool(): pg.Pool {
   });
 }
 
+/** Verified once per process; the grant cannot change under us mid-run. */
+let readOnlyVerified = false;
+
 async function readOnly<T>(fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
+  if (!readOnlyVerified) {
+    await assertInternalDbReadOnly();
+    readOnlyVerified = true;
+  }
   const p = pool();
   const client = await p.connect();
   try {
@@ -170,9 +180,10 @@ export async function listInternalEmployees(): Promise<EmployeeRecord[]> {
     }));
 }
 
-export async function testInternalDb(): Promise<{ ok: boolean; error?: string; clients?: number; employees?: number }> {
+export async function testInternalDb(): Promise<{ ok: boolean; error?: string; clients?: number; employees?: number; readOnly?: unknown }> {
   if (!config.internalDb.url) return { ok: false, error: 'INTERNAL_DB_URL is not set' };
   try {
+    const readOnlyCheck = await assertInternalDbReadOnly();
     const clients = await new InternalDbClientSource().listClients();
     let employees = 0;
     try {
@@ -180,7 +191,7 @@ export async function testInternalDb(): Promise<{ ok: boolean; error?: string; c
     } catch {
       // Employees are optional; a missing table is not a failure.
     }
-    return { ok: true, clients: clients.length, employees };
+    return { ok: true, clients: clients.length, employees, readOnly: readOnlyCheck };
   } catch (err) {
     logger.error({ err }, 'internal db check failed');
     return { ok: false, error: String(err) };

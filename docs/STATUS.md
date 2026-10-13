@@ -243,3 +243,68 @@ Per CLAUDE.md, with no further input required:
 11. **The Naive Bayes classifier needs ~40 labelled items before it activates**,
     and only answers above 0.85 confidence (0.93 to call something FYI). Run
     `train-classifier` periodically once the team has been using the queues.
+
+---
+
+## 8. Internal database safety
+
+Two databases, deliberately asymmetric:
+
+| | `DATABASE_URL` | `INTERNAL_DB_URL` |
+|---|---|---|
+| What | This tool's own database | The company's internal tool |
+| Owner | This project | Another team |
+| Access | Read **and** write | **Read only, always** |
+| Migrations | Yes | Never |
+
+Four independent layers keep the second one read-only. Only the first is a
+true guarantee; the rest are there to catch a mistake before it reaches it.
+
+**1. The Postgres grant (the actual guarantee).** Create a login that can only
+select:
+
+```sql
+CREATE ROLE replyqueue_reader LOGIN PASSWORD 'a-strong-password';
+ALTER ROLE replyqueue_reader SET default_transaction_read_only = on;
+
+GRANT CONNECT ON DATABASE your_internal_db TO replyqueue_reader;
+GRANT USAGE ON SCHEMA public TO replyqueue_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO replyqueue_reader;
+
+-- Tables created later are covered too.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO replyqueue_reader;
+
+-- Make sure nothing was inherited from PUBLIC.
+REVOKE CREATE ON SCHEMA public FROM replyqueue_reader;
+```
+
+Do not hand this tool a superuser or the application's own login. A superuser
+ignores every grant, and the runtime check below will refuse to run against one.
+
+**2. A runtime check that the grant is real.** Before the first query,
+`assertInternalDbReadOnly()` verifies the role is not a superuser and holds no
+INSERT/UPDATE/DELETE/TRUNCATE on any table. If it can write, the tool throws
+rather than proceeding. Verify yours with:
+
+```bash
+npx tsx src/cli.ts check-internal-db-readonly
+```
+
+It also refuses if `INTERNAL_DB_URL` and `DATABASE_URL` resolve to the same
+host, port and database — otherwise every write we believe is local would land
+in the internal tool.
+
+**3. Every statement runs in `BEGIN TRANSACTION READ ONLY`.** Postgres itself
+rejects a write inside that transaction, so even a mistaken query cannot
+modify anything. All access is funnelled through `readOnly()` in
+`src/sync/internalDb.ts`; there is no second connection path.
+
+**4. Agent-level rules.** `CLAUDE.md` forbids writing to `INTERNAL_DB_URL` in
+any form, and `.claude/settings.json` denies the direct database clients
+(`psql`, `pg_dump`, `mysql`, `mongosh`, …) that would bypass the guarded path.
+The credential lives in `.env.internal`, which is denied to the Read tool, so
+the agent can run the app against the database without ever seeing the string.
+
+The escape hatch `INTERNAL_DB_ALLOW_WRITABLE_CREDENTIAL=true` exists so a human
+can knowingly proceed with a writable login during setup. Setting it is denied
+to the agent, and it only downgrades layer 2 — layer 3 still blocks writes.

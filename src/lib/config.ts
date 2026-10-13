@@ -1,4 +1,10 @@
 import 'dotenv/config';
+import { config as loadEnv } from 'dotenv';
+
+// Credentials for OTHER systems live in their own file, which Claude's Read
+// tool is denied in .claude/settings.json. Node loads it at runtime, so the
+// app can connect while the agent never sees the string.
+loadEnv({ path: '.env.internal', override: false, quiet: true });
 
 function str(key: string, fallback = ''): string {
   const v = process.env[key];
