@@ -310,3 +310,23 @@ td select, td input { height: 28px; line-height: 26px; font-size: 12.5px; }
 .row-title { min-width: 0; }
 .row-meta { min-width: 0; }
 .row-meta span { overflow-wrap: anywhere; }
+
+/* Section headings carry their own actions, so adding a row happens where the
+   row will appear rather than in a separate form at the top of the page. */
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.section-actions { display: inline-flex; gap: 6px; }
+
+.inline-add {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}

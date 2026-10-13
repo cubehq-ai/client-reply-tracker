@@ -14,7 +14,6 @@ function toList(value: unknown): string[] {
 const TABS = [
   { key: 'mailboxes', label: 'Mailboxes & teams' },
   { key: 'clients', label: 'Clients & domains' },
-  { key: 'rules', label: 'Rules & exclusions' },
 ];
 
 export function Settings({ onChanged }: { onChanged: () => void }) {
@@ -29,7 +28,6 @@ export function Settings({ onChanged }: { onChanged: () => void }) {
       </div>
       {tab === 'mailboxes' && <Mailboxes onChanged={onChanged} />}
       {tab === 'clients' && <Clients onChanged={onChanged} />}
-      {tab === 'rules' && <Rules />}
     </>
   );
 }
@@ -38,9 +36,9 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
   const [data, setData] = useState<{ mailboxes: any[]; teams: any[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [bulk, setBulk] = useState('');
-  const [bulkTeam, setBulkTeam] = useState('');
-  const [newTeam, setNewTeam] = useState('');
+  /** Which section has its inline "add" row open. */
+  const [adding, setAdding] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
 
   const load = () => api.settingsMailboxes().then(setData).catch((e) => setError(e.message));
   useEffect(() => { void load(); }, []);
@@ -51,9 +49,14 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
     catch (e: any) { setError(e.message); }
   }
 
+  function closeAdd() { setAdding(null); setDraft(''); }
+
   if (!data) return <div className="empty">{error ?? 'Loading…'}</div>;
 
+  // Every team gets a section, including an empty one, so a mailbox can always
+  // be added straight into the team it belongs to.
   const byTeam = new Map<string, any[]>();
+  for (const t of data.teams) byTeam.set(t.name, []);
   for (const m of data.mailboxes) {
     const key = m.team_name ?? 'No team';
     byTeam.set(key, [...(byTeam.get(key) ?? []), m]);
@@ -65,38 +68,32 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
       {error && <div className="banner danger">{error}</div>}
 
       <div className="card" style={{ marginBottom: 14 }}>
-        <div className="section-title">Add mailboxes</div>
-        <div style={{ padding: 12 }}>
-          <textarea
-            value={bulk}
-            onChange={(e) => setBulk(e.target.value)}
-            placeholder={'One address per line, or comma separated\nanna@cubehq.ai\nmary@cubehq.ai'}
-            style={{ width: '100%', minHeight: 80 }}
-          />
-          <div className="toolbar" style={{ marginTop: 8, marginBottom: 0 }}>
-            <input type="text" list="team-list" placeholder="Team (optional)" value={bulkTeam} onChange={(e) => setBulkTeam(e.target.value)} />
-            <datalist id="team-list">{data.teams.map((t) => <option key={t.id} value={t.name} />)}</datalist>
-            <button
-              className="btn primary"
-              disabled={!bulk.trim()}
-              onClick={() => act(async () => {
-                const emails = bulk.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
-                const res = await api.settingsPost('mailboxes', { emails, team: bulkTeam || null });
-                setBulk('');
-                if (res.rejected?.length) setError(`Rejected: ${res.rejected.map((r: any) => `${r.email} (${r.reason})`).join(', ')}`);
-              }, 'Mailboxes added.')}
-            >
-              Add to watch list
+        <div className="section-title">
+          <span>Teams</span>
+          <span className="section-actions">
+            <button className="btn small" onClick={() => { setAdding(adding === '__team' ? null : '__team'); setDraft(''); }}>
+              {adding === '__team' ? 'Cancel' : '+ Add team'}
             </button>
-            <button className="btn" onClick={() => act(() => api.settingsPost('roster'), 'Default roster applied.')}>
-              Re-apply default roster
+            <button className="btn small" onClick={() => act(() => api.settingsPost('roster'), 'Default roster applied.')}>
+              Re-apply roster
+            </button>
+          </span>
+        </div>
+
+        {adding === '__team' && (
+          <div className="inline-add">
+            <input
+              type="text" autoFocus placeholder="Team name" value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) { void act(() => api.settingsPost('teams', { name: draft }), 'Team created.').then(closeAdd); } }}
+            />
+            <button className="btn primary small" disabled={!draft.trim()}
+              onClick={() => act(() => api.settingsPost('teams', { name: draft }), 'Team created.').then(closeAdd)}>
+              Add team
             </button>
           </div>
-        </div>
-      </div>
+        )}
 
-      <div className="card" style={{ marginBottom: 14 }}>
-        <div className="section-title">Teams</div>
         <table>
           <thead><tr><th>Team</th><th className="num">Members</th><th className="num">Mailboxes</th><th></th></tr></thead>
           <tbody>
@@ -121,21 +118,36 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
             ))}
           </tbody>
         </table>
-        <div className="toolbar" style={{ padding: 12, marginBottom: 0 }}>
-          <input type="text" placeholder="New team name" value={newTeam} onChange={(e) => setNewTeam(e.target.value)} />
-          <button className="btn" disabled={!newTeam.trim()} onClick={() => act(async () => {
-            await api.settingsPost('teams', { name: newTeam });
-            setNewTeam('');
-          }, 'Team created.')}>Add team</button>
-        </div>
       </div>
 
       {[...byTeam.entries()].map(([team, boxes]) => (
         <div className="card" style={{ marginBottom: 14 }} key={team}>
-          <div className="section-title">{team} <span className="muted">· {boxes.length}</span></div>
+          <div className="section-title">
+            <span>{team} <span className="muted">· {boxes.length}</span></span>
+            <button className="btn small" onClick={() => { setAdding(adding === team ? null : team); setDraft(''); }}>
+              {adding === team ? 'Cancel' : '+ Add mailbox'}
+            </button>
+          </div>
+
+          {adding === team && (
+            <div className="inline-add">
+              <input
+                type="text" autoFocus style={{ minWidth: 320 }}
+                placeholder="name@cubehq.ai — or several, comma or newline separated"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) void submitMailboxes(); }}
+              />
+              <button className="btn primary small" disabled={!draft.trim()} onClick={() => void submitMailboxes()}>
+                Add to {team === 'No team' ? 'watch list' : team}
+              </button>
+            </div>
+          )}
+
           <table>
             <thead><tr><th>Mailbox</th><th>Kind</th><th>Status</th><th className="num">Messages</th><th>Last synced</th><th></th></tr></thead>
             <tbody>
+              {boxes.length === 0 && <tr><td colSpan={6} className="muted">No mailboxes in this team yet.</td></tr>}
               {boxes.map((m) => (
                 <tr key={m.id}>
                   <td className="mono">{m.email}</td>
@@ -170,8 +182,23 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
           </table>
         </div>
       ))}
+
+      <datalist id="team-list">{data.teams.map((t) => <option key={t.id} value={t.name} />)}</datalist>
     </>
   );
+
+  async function submitMailboxes() {
+    const team = adding === 'No team' ? null : adding;
+    const emails = draft.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+    if (emails.length === 0) return;
+    await act(async () => {
+      const res = await api.settingsPost('mailboxes', { emails, team });
+      if (res.rejected?.length) {
+        setError(`Rejected: ${res.rejected.map((r: any) => `${r.email} (${r.reason})`).join(', ')}`);
+      }
+    }, emails.length === 1 ? 'Mailbox added.' : `${emails.length} mailboxes added.`);
+    closeAdd();
+  }
 }
 
 function Clients({ onChanged }: { onChanged: () => void }) {
@@ -301,44 +328,6 @@ function Clients({ onChanged }: { onChanged: () => void }) {
                   }}>+ pattern</button>
                 </td>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  );
-}
-
-function Rules() {
-  const [data, setData] = useState<any>(null);
-  const load = () => api.adminOverview().then(setData).catch(() => {});
-  useEffect(() => { void load(); }, []);
-  if (!data) return <div className="empty">Loading…</div>;
-  return (
-    <>
-      <div className="card" style={{ marginBottom: 14 }}>
-        <div className="section-title">Block / allow rules</div>
-        <table>
-          <thead><tr><th>Type</th><th>Value</th><th>Added by</th><th></th></tr></thead>
-          <tbody>
-            {data.rules.length === 0 && <tr><td colSpan={4} className="muted">None. Created by the "always ignore" actions.</td></tr>}
-            {data.rules.map((r: any) => (
-              <tr key={r.id}>
-                <td>{r.type}</td><td className="mono">{r.value}</td><td className="muted">{r.created_by}</td>
-                <td><button className="btn small danger" onClick={() => api.adminDelete(`rules/${r.id}`).then(load)}>Remove</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="card">
-        <div className="section-title">Exclusions — never read these</div>
-        <table>
-          <thead><tr><th>Kind</th><th>Value</th><th>Reason</th></tr></thead>
-          <tbody>
-            {data.exclusions.length === 0 && <tr><td colSpan={3} className="muted">None. Add HR, legal and personal mailboxes here before going live.</td></tr>}
-            {data.exclusions.map((e: any) => (
-              <tr key={e.id}><td>{e.kind}</td><td className="mono">{e.value}</td><td className="muted">{e.reason ?? ''}</td></tr>
             ))}
           </tbody>
         </table>
