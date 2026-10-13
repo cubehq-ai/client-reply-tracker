@@ -18,6 +18,9 @@ export interface InboxFacets {
   unmatched: number;
   lowConfidence: number;
   awaitingClient: number;
+  notReplied: number;
+  fresh: number;
+  thresholdHours: number;
   total: number;
 }
 

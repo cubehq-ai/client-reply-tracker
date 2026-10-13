@@ -21,6 +21,11 @@ export interface QueueFilters {
   source?: 'gmail' | 'slack';
   /** One or more item states. Empty means "every active state". */
   status?: string[];
+  /**
+   * Split of `needs_reply` by how long it has gone unanswered:
+   * 'aged' is past UNRESPONDED_AFTER_HOURS, 'fresh' is still within it.
+   */
+  freshness?: 'aged' | 'fresh';
   /** Overlay flags, each narrowing the list rather than replacing it. */
   overdue?: boolean;
   unmatched?: boolean;
@@ -182,6 +187,11 @@ export async function listQueue(
   }
   if (filters.source) { params.push(filters.source); where.push(`i.source = $${params.length}`); }
   if (filters.status?.length) { params.push(filters.status); where.push(`i.state = ANY($${params.length}::text[])`); }
+  if (filters.freshness) {
+    params.push(String(config.org.unrespondedAfterHours));
+    const op = filters.freshness === 'aged' ? '<=' : '>';
+    where.push(`i.last_external_at ${op} now() - ($${params.length} || ' hours')::interval`);
+  }
   if (filters.overdue) where.push("i.sla_due_at IS NOT NULL AND i.sla_due_at < now() AND i.state = 'needs_reply'");
   if (filters.unmatched) where.push('i.client_id IS NULL');
   if (filters.awaitingClient) where.push('i.awaiting_client = true');
@@ -204,7 +214,7 @@ export async function listQueue(
              (SELECT m.snippet FROM messages m
                WHERE m.conversation_id = i.conversation_id AND m.direction = 'in'
                ORDER BY m.internal_date DESC LIMIT 1) AS snippet,
-             (SELECT COALESCE(array_agg(DISTINCT mb.email), '{}') FROM message_copies mc
+             (SELECT COALESCE(array_agg(DISTINCT mb.email), '{}'::text[]) FROM message_copies mc
                 JOIN messages m ON m.id = mc.message_id
                 JOIN mailboxes mb ON mb.id = mc.mailbox_id
                WHERE m.conversation_id = i.conversation_id AND mc.deleted = false) AS mailboxes,
@@ -321,6 +331,10 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {})
   unmatched: number;
   lowConfidence: number;
   awaitingClient: number;
+  /** needs_reply split by the unresponded threshold. */
+  notReplied: number;
+  fresh: number;
+  thresholdHours: number;
   total: number;
 }> {
   const params: unknown[] = [];
@@ -337,6 +351,8 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {})
 
   params.push(config.classifier.threshold);
   const thresholdIdx = params.length;
+  params.push(String(config.org.unrespondedAfterHours));
+  const agedIdx = params.length;
 
   const rows = await query<any>(
     `SELECT i.state,
@@ -344,7 +360,11 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {})
             count(*) FILTER (WHERE i.sla_due_at IS NOT NULL AND i.sla_due_at < now() AND i.state = 'needs_reply')::int AS overdue,
             count(*) FILTER (WHERE i.client_id IS NULL)::int AS unmatched,
             count(*) FILTER (WHERE i.needs_reply_confidence IS NOT NULL AND i.needs_reply_confidence < $${thresholdIdx})::int AS low_conf,
-            count(*) FILTER (WHERE i.awaiting_client)::int AS awaiting
+            count(*) FILTER (WHERE i.awaiting_client)::int AS awaiting,
+            count(*) FILTER (WHERE i.state = 'needs_reply'
+              AND i.last_external_at <= now() - ($${agedIdx} || ' hours')::interval)::int AS aged,
+            count(*) FILTER (WHERE i.state = 'needs_reply'
+              AND i.last_external_at > now() - ($${agedIdx} || ' hours')::interval)::int AS fresh
        FROM items i
        JOIN conversations c ON c.id = i.conversation_id
        LEFT JOIN clients cl ON cl.id = i.client_id
@@ -355,7 +375,7 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {})
   );
 
   const status: Record<string, number> = {};
-  let overdue = 0, unmatched = 0, lowConfidence = 0, awaitingClient = 0, total = 0;
+  let overdue = 0, unmatched = 0, lowConfidence = 0, awaitingClient = 0, total = 0, notReplied = 0, fresh = 0;
   for (const r of rows) {
     status[r.state] = Number(r.n);
     total += Number(r.n);
@@ -363,8 +383,13 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {})
     unmatched += Number(r.unmatched);
     lowConfidence += Number(r.low_conf);
     awaitingClient += Number(r.awaiting);
+    notReplied += Number(r.aged);
+    fresh += Number(r.fresh);
   }
-  return { status, overdue, unmatched, lowConfidence, awaitingClient, total };
+  return {
+    status, overdue, unmatched, lowConfidence, awaitingClient,
+    notReplied, fresh, thresholdHours: config.org.unrespondedAfterHours, total,
+  };
 }
 
 /** Per-team roll-up for the Teams view. */

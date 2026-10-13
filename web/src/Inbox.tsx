@@ -8,7 +8,6 @@ const CHANNELS = [
 ];
 
 const STATUSES = [
-  { key: 'needs_reply', label: 'Needs reply' },
   { key: 'fyi', label: 'FYI' },
   { key: 'snoozed', label: 'Snoozed' },
   { key: 'replied', label: 'Replied' },
@@ -35,7 +34,6 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
 }) {
   const [data, setData] = useState<{ items: QueueItem[]; total: number; facets: InboxFacets } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
 
   const params = useMemo(() => {
     const p: Filters = { limit: '100', ...filters };
@@ -53,15 +51,16 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
 
   const set = (patch: Filters) => setFilters({ ...filters, ...patch });
 
+  const hours = data?.facets.thresholdHours ?? 12;
   const statusSet = new Set((filters.status ?? '').split(',').filter(Boolean));
   const toggleStatus = (key: string) => {
     const next = new Set(statusSet);
     next.has(key) ? next.delete(key) : next.add(key);
-    set({ status: [...next].join(',') });
+    set({ status: [...next].join(','), freshness: '' });
   };
   const toggleOverlay = (key: string) => set({ [key]: filters[key] === 'true' ? '' : 'true' });
 
-  const activeCount = Object.entries(filters).filter(([k, v]) => v && k !== 'source' && k !== 'view').length;
+  const activeCount = Object.entries(filters).filter(([k, v]) => v && k !== 'source' && k !== 'view' && k !== 'status' && k !== 'freshness').length;
 
   return (
     <>
@@ -88,6 +87,21 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
       </div>
 
       <div className="chips">
+        <button
+          className={`chip ${filters.freshness === 'aged' ? 'on' : ''}`}
+          title={`Client wrote more than ${hours}h ago and nobody has replied`}
+          onClick={() => set({ status: 'needs_reply', freshness: filters.freshness === 'aged' ? '' : 'aged' })}
+        >
+          Not replied ({hours}h+) <span className="chip-n">{data?.facets.notReplied ?? 0}</span>
+        </button>
+        <button
+          className={`chip ${filters.freshness === 'fresh' ? 'on' : ''}`}
+          title={`Waiting on us, but less than ${hours}h old`}
+          onClick={() => set({ status: 'needs_reply', freshness: filters.freshness === 'fresh' ? '' : 'fresh' })}
+        >
+          Awaiting (&lt;{hours}h) <span className="chip-n">{data?.facets.fresh ?? 0}</span>
+        </button>
+        <span className="chip-sep" />
         {STATUSES.map((s) => {
           const n = data?.facets.status[s.key] ?? 0;
           return (
@@ -142,27 +156,12 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
             onChange={(e) => set({ search: e.target.value })}
           />
           {activeCount > 0 && (
-            <>
-              <button
-                className="btn small"
-                onClick={() => setFilters({ source: filters.source ?? 'gmail', view: filters.view ?? 'all' })}
-              >
-                Clear {activeCount}
-              </button>
-              <button
-                className="btn small"
-                disabled={saving}
-                onClick={async () => {
-                  const name = window.prompt('Name this view');
-                  if (!name) return;
-                  setSaving(true);
-                  try { await api.createSavedView(name, filters); window.dispatchEvent(new Event('rq:views-changed')); }
-                  finally { setSaving(false); }
-                }}
-              >
-                Save view
-              </button>
-            </>
+            <button
+              className="btn small"
+              onClick={() => setFilters({ source: filters.source ?? 'gmail', view: filters.view ?? 'all' })}
+            >
+              Clear {activeCount}
+            </button>
           )}
         </div>
       </div>

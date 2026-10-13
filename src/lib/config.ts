@@ -43,6 +43,11 @@ export const config = {
     excludedLabels: list('EXCLUDED_LABELS').map((s) => s.toUpperCase()),
     backfillDays: num('BACKFILL_DAYS', 30),
     bodyRetentionDays: num('BODY_RETENTION_DAYS', 90),
+    /**
+     * How long an unanswered client message may sit before it counts as
+     * unresponded. Anything newer is still in normal working flow.
+     */
+    unrespondedAfterHours: num('UNRESPONDED_AFTER_HOURS', 12),
   },
 
   sla: {

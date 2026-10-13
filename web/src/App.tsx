@@ -5,6 +5,7 @@ import { Thread } from './Thread';
 import { Inbox, type Filters } from './Inbox';
 import { Settings } from './Settings';
 import { Metrics } from './Metrics';
+import { ErrorBoundary } from './ErrorBoundary';
 
 type Page =
   | { kind: 'inbox'; title: string; subtitle: string; preset: Filters }
@@ -16,13 +17,13 @@ type Page =
 type InboxPage = Extract<Page, { kind: 'inbox' }>;
 
 const INBOX_SUBTITLE =
-  'Everything in one list. Status, overdue and unmatched are filters on it, not separate places.';
+  'Client mail with no reply from us. Status, overdue and unmatched are filters on it, not separate places.';
 
 const INBOX: InboxPage = {
   kind: 'inbox',
   title: 'Inbox',
   subtitle: INBOX_SUBTITLE,
-  preset: { source: 'gmail', view: 'all', status: 'needs_reply' },
+  preset: { source: 'gmail', view: 'all', status: 'needs_reply', freshness: 'aged' },
 };
 
 export function App() {
@@ -91,7 +92,7 @@ export function App() {
         <div className="nav-group">Work</div>
         <button
           className={`nav-item ${isInbox && page.title === 'Inbox' ? 'active' : ''}`}
-          onClick={() => goInbox({ source: 'gmail', view: 'all', status: 'needs_reply' })}
+          onClick={() => goInbox({ source: 'gmail', view: 'all', status: 'needs_reply', freshness: 'aged' })}
         >
           Inbox
         </button>
@@ -134,6 +135,7 @@ export function App() {
       </nav>
 
       <main className="main">
+        <ErrorBoundary key={page.kind + (isInbox ? page.title : '')}>
         {isInbox && (
           <Inbox
             key={page.title}
@@ -157,6 +159,7 @@ export function App() {
         )}
         {page.kind === 'metrics' && <Metrics />}
         {page.kind === 'settings' && <Settings onChanged={refresh} />}
+        </ErrorBoundary>
       </main>
 
       {openItem !== null && (

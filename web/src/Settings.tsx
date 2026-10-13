@@ -1,11 +1,20 @@
 import { useEffect, useState } from 'react';
 import { api, timeAgo } from './api';
 
+/** Tolerates a scalar, a Postgres array literal, or a real array. */
+function toList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === 'string') {
+    const inner = value.replace(/^\{|\}$/g, '').trim();
+    return inner ? inner.split(',').map((v) => v.replace(/^"|"$/g, '').trim()).filter(Boolean) : [];
+  }
+  return [];
+}
+
 const TABS = [
   { key: 'mailboxes', label: 'Mailboxes & teams' },
   { key: 'clients', label: 'Clients & domains' },
   { key: 'rules', label: 'Rules & exclusions' },
-  { key: 'integrations', label: 'Integrations' },
 ];
 
 export function Settings({ onChanged }: { onChanged: () => void }) {
@@ -21,7 +30,6 @@ export function Settings({ onChanged }: { onChanged: () => void }) {
       {tab === 'mailboxes' && <Mailboxes onChanged={onChanged} />}
       {tab === 'clients' && <Clients onChanged={onChanged} />}
       {tab === 'rules' && <Rules />}
-      {tab === 'integrations' && <Integrations />}
     </>
   );
 }
@@ -277,10 +285,10 @@ function Clients({ onChanged }: { onChanged: () => void }) {
               <tr key={c.id}>
                 <td><strong>{c.name}</strong></td>
                 <td>{c.tier ?? '—'}</td>
-                <td className="mono" style={{ fontSize: 11 }}>{(c.domains ?? []).join(', ') || '—'}</td>
-                <td className="mono" style={{ fontSize: 11 }}>{(c.contacts ?? []).join(', ') || '—'}</td>
+                <td className="mono" style={{ fontSize: 11 }}>{toList(c.domains).join(', ') || '—'}</td>
+                <td className="mono" style={{ fontSize: 11 }}>{toList(c.contacts).join(', ') || '—'}</td>
                 <td className="mono" style={{ fontSize: 11 }}>
-                  {(c.patterns ?? []).map((p: any) => (
+                  {(Array.isArray(c.patterns) ? c.patterns : []).map((p: any) => (
                     <div key={p.id}>
                       {p.pattern}
                       <button className="btn small danger" style={{ marginLeft: 6 }}
@@ -334,63 +342,6 @@ function Rules() {
             ))}
           </tbody>
         </table>
-      </div>
-    </>
-  );
-}
-
-function Integrations() {
-  const [health, setHealth] = useState<any>(null);
-  const [internal, setInternal] = useState<any>(null);
-  const [inspecting, setInspecting] = useState(false);
-  useEffect(() => {
-    api.health().then(setHealth).catch(() => {});
-    fetch('/api/settings/internal-db').then((r) => r.json()).then(setInternal).catch(() => {});
-  }, []);
-
-  return (
-    <>
-      <div className="card" style={{ marginBottom: 14 }}>
-        <div className="section-title">Google Workspace</div>
-        <table>
-          <tbody>
-            <tr><td>Backend</td><td><strong>{health?.googleBackend ?? '…'}</strong></td></tr>
-            <tr><td>Sending</td><td><strong>{health?.sendEnabled ? 'live' : 'dry run'}</strong></td></tr>
-            <tr><td>Gmail writes</td><td><strong>{health?.gmailWriteEnabled ? 'enabled' : 'disabled'}</strong></td></tr>
-            <tr><td>Push</td><td><strong>{health?.pubsub ?? '…'}</strong></td></tr>
-          </tbody>
-        </table>
-        {health?.googleBackend === 'fake' && (
-          <div style={{ padding: 12 }}>
-            <div className="banner warn" style={{ marginBottom: 0 }}>
-              Running on fixtures. Real mail needs domain-wide delegation authorised by a Workspace super admin,
-              then <span className="mono">GOOGLE_SERVICE_ACCOUNT_FILE</span>, <span className="mono">GOOGLE_ADMIN_SUBJECT</span> and{' '}
-              <span className="mono">GOOGLE_BACKEND=real</span>. See docs/STATUS.md §3.
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="card">
-        <div className="section-title">Internal tool database</div>
-        <div style={{ padding: 12 }}>
-          {internal?.ok
-            ? <div className="banner info" style={{ marginBottom: 8 }}>Connected · {internal.clients} clients, {internal.employees} employees readable.</div>
-            : <div className="banner warn" style={{ marginBottom: 8 }}>Not connected: {internal?.error ?? 'INTERNAL_DB_URL is not set'}</div>}
-          <p className="muted" style={{ fontSize: 12.5 }}>
-            Set <span className="mono">INTERNAL_DB_URL</span> to a read-only login. Every query runs inside a
-            READ ONLY transaction, so this can never write to that database.
-          </p>
-          <button className="btn" disabled={inspecting} onClick={async () => {
-            setInspecting(true);
-            try {
-              const res = await api.settingsPost('internal-db/inspect');
-              window.alert(`Likely client tables: ${res.likelyClients.join(', ') || 'none'}\nLikely employee tables: ${res.likelyEmployees.join(', ') || 'none'}\n\n${res.tables.length} tables total.`);
-            } catch (e: any) {
-              window.alert(e.message);
-            } finally { setInspecting(false); }
-          }}>Inspect schema</button>
-        </div>
       </div>
     </>
   );

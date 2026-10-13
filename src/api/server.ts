@@ -127,6 +127,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       search: q.search,
       source: (q.source as QueueFilters['source']) ?? undefined,
       status: q.status ? q.status.split(',').filter(Boolean) : undefined,
+      freshness: (q.freshness as QueueFilters['freshness']) ?? undefined,
       overdue: q.overdue === 'true',
       unmatched: q.unmatched === 'true',
       lowConfidence: q.lowConfidence === 'true',

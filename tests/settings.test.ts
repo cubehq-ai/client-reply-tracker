@@ -2,7 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { query } from '../src/db/pool.js';
 import {
   addClientDomain, addClientPattern, addMailbox, addMailboxesBulk, createClient,
-  createTeam, listMailboxes, listTeams, removeMailbox, testClientPattern, updateMailbox,
+  createTeam, listClientsDetailed, listMailboxes, listTeams, removeMailbox,
+  testClientPattern, updateMailbox,
 } from '../src/api/settings.js';
 import type { SessionUser } from '../src/api/auth.js';
 import { loadClientIndex, matchClient } from '../src/pipeline/clientMatch.js';
@@ -127,5 +128,33 @@ describe('clients and patterns', () => {
     await addClientDomain(admin, client.id, '@SOYLENT.TEST');
     const index = await loadClientIndex();
     expect(matchClient(index, 'ops@soylent.test').clientId).toBe(client.id);
+  });
+});
+
+describe('client listing shape', () => {
+  /**
+   * A COALESCE onto an untyped '{}' loses the array type and node-pg hands
+   * back a string. The UI then called .join on it, which threw during render
+   * and unmounted the whole app — the Settings tabs appeared to stop working.
+   */
+  it('returns real arrays for domains, contacts and patterns', async () => {
+    const client = await createClient(admin, { name: 'Arrayco', domains: ['arrayco.test'], contacts: ['ops@arrayco.test'] });
+    await addClientPattern(admin, client.id, '^ops@arrayco\\.test$');
+
+    const rows = await listClientsDetailed();
+    const row = rows.find((r) => r.name === 'Arrayco');
+
+    expect(Array.isArray(row.domains)).toBe(true);
+    expect(Array.isArray(row.contacts)).toBe(true);
+    expect(Array.isArray(row.patterns)).toBe(true);
+    expect(row.domains).toContain('arrayco.test');
+  });
+
+  it('returns an empty array, not a string, for a client with nothing attached', async () => {
+    await createClient(admin, { name: 'Bareco' });
+    const row = (await listClientsDetailed()).find((r) => r.name === 'Bareco');
+    expect(Array.isArray(row.domains)).toBe(true);
+    expect(row.domains).toHaveLength(0);
+    expect(Array.isArray(row.patterns)).toBe(true);
   });
 });

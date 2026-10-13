@@ -179,10 +179,10 @@ export async function listClientsDetailed(): Promise<any[]> {
   return query(
     `SELECT c.id, c.name, c.tier, c.external_id, c.archived,
             u.email AS account_manager,
-            COALESCE(array_agg(DISTINCT d.domain) FILTER (WHERE d.domain IS NOT NULL), '{}') AS domains,
-            COALESCE(array_agg(DISTINCT ct.email) FILTER (WHERE ct.email IS NOT NULL), '{}') AS contacts,
+            COALESCE(array_agg(DISTINCT d.domain) FILTER (WHERE d.domain IS NOT NULL), '{}'::text[]) AS domains,
+            COALESCE(array_agg(DISTINCT ct.email) FILTER (WHERE ct.email IS NOT NULL), '{}'::text[]) AS contacts,
             COALESCE(json_agg(DISTINCT jsonb_build_object('id', p.id, 'pattern', p.pattern, 'priority', p.priority))
-                     FILTER (WHERE p.id IS NOT NULL), '[]') AS patterns
+                     FILTER (WHERE p.id IS NOT NULL), '[]'::json) AS patterns
        FROM clients c
        LEFT JOIN users u ON u.id = c.account_manager_user_id
        LEFT JOIN client_domains d ON d.client_id = c.id
