@@ -260,6 +260,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const user = await requireUser(req);
     const body = z.object({
       sendAs: z.string().email().optional(),
+      replyToMessageId: z.number().optional(),
       to: z.array(z.string().email()).min(1),
       cc: z.array(z.string().email()).optional(),
       subject: z.string(),

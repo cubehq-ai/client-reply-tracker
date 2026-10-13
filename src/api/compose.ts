@@ -251,6 +251,12 @@ export function buildMime(input: BuildMimeInput): string {
 export interface SendReplyInput {
   itemId: number;
   sendAs?: string;
+  /**
+   * Which message in the thread this answers. Threading headers are built
+   * from it, so a reply to an older message lands under that message rather
+   * than under whatever happened to arrive last.
+   */
+  replyToMessageId?: number;
   to: string[];
   cc?: string[];
   subject: string;
@@ -290,7 +296,24 @@ export async function sendReply(user: SessionUser, input: SendReplyInput): Promi
 
   if (input.to.length === 0) throw new HttpError(400, 'at least one recipient is required');
 
-  const lastExternal = [...thread.messages].reverse().find((m) => m.direction === 'in' && !m.isDraft);
+  // Reply to the chosen message, falling back to the latest external one.
+  const targetIndex = input.replyToMessageId
+    ? thread.messages.findIndex((m) => m.id === input.replyToMessageId)
+    : -1;
+  const target =
+    targetIndex >= 0
+      ? thread.messages[targetIndex]
+      : [...thread.messages].reverse().find((m) => m.direction === 'in' && !m.isDraft);
+
+  if (input.replyToMessageId && targetIndex === -1) {
+    throw new HttpError(400, 'the message being replied to is not part of this thread');
+  }
+
+  // References must be the chain up to the message being answered, not the
+  // whole thread, or clients nest the reply in the wrong place.
+  const upTo = targetIndex >= 0 ? thread.messages.slice(0, targetIndex + 1) : thread.messages;
+  const references = [...new Set(upTo.map((m) => m.rfcMessageId))];
+
   const mime = buildMime({
     from: sendAs,
     fromName: user.name ?? undefined,
@@ -298,9 +321,9 @@ export async function sendReply(user: SessionUser, input: SendReplyInput): Promi
     cc: input.cc ?? [],
     subject: input.subject,
     bodyText: input.body,
-    inReplyTo: thread.reply.inReplyTo,
-    references: thread.reply.references,
-    quoted: lastExternal ? { from: lastExternal.from, date: new Date(lastExternal.date).toUTCString(), body: lastExternal.body } : null,
+    inReplyTo: target?.rfcMessageId ?? thread.reply.inReplyTo,
+    references,
+    quoted: target ? { from: target.from, date: new Date(target.date).toUTCString(), body: target.body } : null,
   });
 
   const gmail = getGmailClient();
