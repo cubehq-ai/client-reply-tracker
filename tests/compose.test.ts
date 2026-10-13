@@ -53,4 +53,18 @@ describe('MIME building', () => {
     expect(buildMime(base)).toContain('Cc: rahul@cubehq.ai');
     expect(buildMime({ ...base, cc: [] })).not.toContain('Cc:');
   });
+
+  it('keeps To, Cc and Bcc as separate headers', () => {
+    const mime = buildMime({ ...base, bcc: ['audit@cubehq.ai'] });
+    expect(mime).toContain('To: ops@acme.com');
+    expect(mime).toContain('Cc: rahul@cubehq.ai');
+    expect(mime).toContain('Bcc: audit@cubehq.ai');
+    // Bcc must not leak into the visible recipient lists.
+    expect(mime).not.toMatch(/^To:.*audit@cubehq\.ai/m);
+    expect(mime).not.toMatch(/^Cc:.*audit@cubehq\.ai/m);
+  });
+
+  it('omits Bcc entirely when there is none', () => {
+    expect(buildMime(base)).not.toContain('Bcc:');
+  });
 });

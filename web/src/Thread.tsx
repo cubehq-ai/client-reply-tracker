@@ -33,7 +33,8 @@ export function Thread({ itemId, user, clients, onClose, onChanged }: {
   const [panel, setPanel] = useState<'ignore' | 'link' | null>(null);
 
   // The composer is closed until a message is replied to.
-  const [composer, setComposer] = useState<{ replyToMessageId: number; to: string; cc: string; subject: string } | null>(null);
+  const [composer, setComposer] = useState<{ replyToMessageId: number; to: string; cc: string; bcc: string; subject: string } | null>(null);
+  const [showBcc, setShowBcc] = useState(false);
   const [body, setBody] = useState('');
   const [sendAs, setSendAs] = useState('');
   const composerRef = useRef<HTMLDivElement | null>(null);
@@ -104,11 +105,16 @@ export function Thread({ itemId, user, clients, onClose, onChanged }: {
     const msg = thread?.messages.find((m) => m.id === messageId);
     if (!msg || !thread) return;
     const to = msg.direction === 'in' ? [msg.from] : msg.to;
+    // Never Cc the address we are sending from, nor anyone already in To.
+    const sender = (sendAs || user.email).toLowerCase();
     const cc = all
-      ? [...new Set([...msg.to, ...msg.cc])].filter((e) => e !== user.email && !to.includes(e))
+      ? [...new Set([...msg.to, ...msg.cc])]
+          .map((e) => e.toLowerCase())
+          .filter((e) => e !== sender && e !== user.email.toLowerCase() && !to.map((t) => t.toLowerCase()).includes(e))
       : [];
     const base = (msg.subject || thread.subject).replace(/^((re|fwd?)\s*:\s*)+/i, '');
-    setComposer({ replyToMessageId: messageId, to: to.join(', '), cc: cc.join(', '), subject: `Re: ${base}` });
+    setComposer({ replyToMessageId: messageId, to: to.join(', '), cc: cc.join(', '), bcc: '', subject: `Re: ${base}` });
+    setShowBcc(false);
     setExpanded((prev) => new Set([...prev, messageId]));
     setTimeout(() => composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 60);
   }
@@ -123,6 +129,7 @@ export function Thread({ itemId, user, clients, onClose, onChanged }: {
         replyToMessageId: composer.replyToMessageId,
         to: composer.to.split(',').map((s) => s.trim()).filter(Boolean),
         cc: composer.cc.split(',').map((s) => s.trim()).filter(Boolean),
+        bcc: composer.bcc.split(',').map((s) => s.trim()).filter(Boolean),
         subject: composer.subject,
         body,
         force,
@@ -215,13 +222,51 @@ export function Thread({ itemId, user, clients, onClose, onChanged }: {
                 <button className="btn small" onClick={() => { setComposer(null); setBody(''); }}>Discard</button>
               </div>
               <div className="composer-fields">
-                <select value={sendAs} onChange={(e) => setSendAs(e.target.value)} title="Send as">
-                  {thread.reply.sendAs.map((a) => <option key={a} value={a}>{a}</option>)}
-                </select>
-                <input type="text" value={composer.to} placeholder="To"
-                  onChange={(e) => setComposer({ ...composer, to: e.target.value })} />
-                <input type="text" value={composer.cc} placeholder="Cc"
-                  onChange={(e) => setComposer({ ...composer, cc: e.target.value })} />
+                <label className="field-row">
+                  <span className="field-label">From</span>
+                  <select
+                    value={sendAs}
+                    onChange={(e) => {
+                      const next = e.target.value.toLowerCase();
+                      setSendAs(next);
+                      setComposer((c) => c && ({
+                        ...c,
+                        cc: c.cc.split(',').map((x) => x.trim()).filter((x) => x && x.toLowerCase() !== next).join(', '),
+                      }));
+                    }}
+                  >
+                    {thread.reply.sendAs.map((a) => <option key={a} value={a}>{a}</option>)}
+                  </select>
+                </label>
+
+                <label className="field-row">
+                  <span className="field-label">To</span>
+                  <input type="text" value={composer.to} placeholder="comma separated"
+                    onChange={(e) => setComposer({ ...composer, to: e.target.value })} />
+                  {!showBcc && (
+                    <button type="button" className="field-add" onClick={() => setShowBcc(true)}>Bcc</button>
+                  )}
+                </label>
+
+                <label className="field-row">
+                  <span className="field-label">Cc</span>
+                  <input type="text" value={composer.cc} placeholder="comma separated"
+                    onChange={(e) => setComposer({ ...composer, cc: e.target.value })} />
+                </label>
+
+                {showBcc && (
+                  <label className="field-row">
+                    <span className="field-label">Bcc</span>
+                    <input type="text" value={composer.bcc} placeholder="hidden from other recipients"
+                      onChange={(e) => setComposer({ ...composer, bcc: e.target.value })} />
+                  </label>
+                )}
+
+                <label className="field-row">
+                  <span className="field-label">Subject</span>
+                  <input type="text" value={composer.subject}
+                    onChange={(e) => setComposer({ ...composer, subject: e.target.value })} />
+                </label>
               </div>
               <textarea className="composer" autoFocus value={body} placeholder="Write your reply…"
                 onChange={(e) => setBody(e.target.value)} />

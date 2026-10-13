@@ -207,6 +207,7 @@ export interface BuildMimeInput {
   fromName?: string;
   to: string[];
   cc?: string[];
+  bcc?: string[];
   subject: string;
   bodyText: string;
   inReplyTo?: string | null;
@@ -241,6 +242,8 @@ export function buildMime(input: BuildMimeInput): string {
     `From: ${input.fromName ? `${encodeHeader(input.fromName)} <${input.from}>` : input.from}`,
     `To: ${input.to.join(', ')}`,
     ...(input.cc?.length ? [`Cc: ${input.cc.join(', ')}`] : []),
+    // Gmail strips Bcc from the copies it delivers; it is kept on our own.
+    ...(input.bcc?.length ? [`Bcc: ${input.bcc.join(', ')}`] : []),
     `Subject: ${encodeHeader(input.subject)}`,
     `Message-ID: ${messageId}`,
     `Date: ${new Date().toUTCString()}`,
@@ -281,6 +284,7 @@ export interface SendReplyInput {
   replyToMessageId?: number;
   to: string[];
   cc?: string[];
+  bcc?: string[];
   subject: string;
   body: string;
   /** Set after the user accepted the collision warning. */
@@ -344,6 +348,7 @@ export async function sendReply(user: SessionUser, input: SendReplyInput): Promi
     fromName: user.name ?? undefined,
     to: input.to,
     cc: input.cc ?? [],
+    bcc: input.bcc ?? [],
     subject: input.subject,
     bodyText: input.body,
     inReplyTo: target?.rfcMessageId ?? thread.reply.inReplyTo,
@@ -368,7 +373,8 @@ export async function sendReply(user: SessionUser, input: SendReplyInput): Promi
   try {
     const result = await gmail.send(sendAs, mime, thread.reply.threadId ?? undefined);
     await audit(user, 'send_reply', input.itemId, {
-      sendAs, to: input.to, cc: input.cc ?? [], gmailMessageId: result.id, rfcMessageId: result.rfcMessageId, dryRun: result.dryRun,
+      sendAs, to: input.to, cc: input.cc ?? [], bcc: input.bcc ?? [],
+      gmailMessageId: result.id, rfcMessageId: result.rfcMessageId, dryRun: result.dryRun,
     });
 
     if (result.dryRun) {

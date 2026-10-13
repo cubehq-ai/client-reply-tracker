@@ -406,3 +406,25 @@ td > input[type="text"] { display: inline-block; }
   display: inline-block; min-width: 28px; font-weight: 600;
   color: var(--text); opacity: .55; margin-right: 6px;
 }
+
+/* Composer fields read as a labelled form, not a row of look-alike boxes. */
+.composer-fields { display: flex; flex-direction: column; gap: 0; padding: 0; }
+.field-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; border-bottom: 1px solid var(--border);
+}
+.field-label {
+  flex: 0 0 56px; font-size: 12px; font-weight: 600;
+  color: var(--muted); text-transform: uppercase; letter-spacing: .04em;
+}
+.field-row input, .field-row select {
+  flex: 1 1 auto; min-width: 0; border: none; background: transparent;
+  padding: 0; height: 22px; line-height: 22px;
+}
+.field-row input:focus, .field-row select:focus { outline: none; }
+.field-row select { padding-right: 24px; background-position: right 2px center; }
+.field-add {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--accent); font-size: 12px; font-weight: 600; padding: 0 4px;
+}
+.field-add:hover { text-decoration: underline; }
