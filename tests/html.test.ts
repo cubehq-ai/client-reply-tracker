@@ -60,3 +60,28 @@ describe('html to text', () => {
     expect(text.split('\n').some((l) => /^Begin forwarded message:/.test(l))).toBe(true);
   });
 });
+
+describe('signature artefacts', () => {
+  it('does not repeat a mailto or tel target the label already shows', () => {
+    expect(htmlToText('<a href="mailto:csmith@siegelcompanies.com">csmith@siegelcompanies.com</a>'))
+      .toBe('csmith@siegelcompanies.com');
+    expect(htmlToText('<a href="tel:+17029478330">t: +1 702.947.8330</a>')).toBe('t: +1 702.947.8330');
+  });
+
+  it('does not repeat a url the label already contains', () => {
+    expect(htmlToText('<a href="https://siegelcompanies.com/">siegelcompanies.com</a>')).toBe('siegelcompanies.com');
+  });
+
+  it('still shows the target when the label is unrelated text', () => {
+    expect(htmlToText('<a href="https://acme.com/pricing">see our pricing</a>')).toBe('see our pricing <https://acme.com/pricing>');
+  });
+
+  it('drops inline image placeholders', () => {
+    expect(htmlToText('<p>Regards[cid:075f4569-4465-4da2]</p>')).toBe('Regards');
+  });
+
+  it('drops lines left holding only table separators', () => {
+    expect(htmlToText('<div>Christina Smith</div><div>|</div><div>Marketing Coordinator</div>'))
+      .toBe('Christina Smith\nMarketing Coordinator');
+  });
+});

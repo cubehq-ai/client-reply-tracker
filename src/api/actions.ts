@@ -1,4 +1,5 @@
 import { one, query, tx } from '../db/pool.js';
+import { invalidateOrgContext } from '../pipeline/context.js';
 import { logger } from '../lib/logger.js';
 import { recomputeItemState } from '../pipeline/stateMachine.js';
 import { rematchUnmatchedItems } from '../sync/clients.js';
@@ -82,6 +83,7 @@ export async function ignoreItem(
     [itemId, reason, muted],
   );
   await recordEvent(itemId, item.state, 'no_reply_needed', `ignored:${scope}`, user.email, { reason, scope });
+  invalidateOrgContext();
   await audit(user, 'ignore', itemId, { reason, scope, ruleCreated });
 
   return { state: 'no_reply_needed', ruleCreated };
@@ -194,6 +196,7 @@ export async function linkToClient(
   }
 
   const rematched = await rematchUnmatchedItems();
+  invalidateOrgContext();
   await audit(user, 'link_to_client', itemId, { clientId, mode, value: mode === 'domain' ? sender.from_domain : sender.from_email });
   logger.info({ itemId, clientId, mode, rematched }, 'linked sender to client');
   return { linked: mode === 'domain' ? sender.from_domain : sender.from_email, rematched };

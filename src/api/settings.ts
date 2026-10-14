@@ -1,4 +1,5 @@
 import { one, query, tx } from '../db/pool.js';
+import { invalidateOrgContext } from '../pipeline/context.js';
 import { logger } from '../lib/logger.js';
 import { clearMailboxCache } from '../pipeline/ingest.js';
 import { rematchUnmatchedItems } from '../sync/clients.js';
@@ -101,6 +102,7 @@ export async function addMailbox(user: SessionUser, input: AddMailboxInput): Pro
   });
 
   clearMailboxCache();
+  invalidateOrgContext();
   await audit(user, 'add_mailbox', null, { email, team: input.team ?? null });
   logger.info({ email, team: input.team }, 'mailbox added to the watch list');
   return { email, teamId };
@@ -134,6 +136,7 @@ export async function updateMailbox(
   if (patch.status && patch.status !== 'active') await stopWatch(mailbox.email);
 
   clearMailboxCache();
+  invalidateOrgContext();
   await audit(user, 'update_mailbox', null, { mailboxId, ...patch });
 }
 
@@ -148,6 +151,7 @@ export async function removeMailbox(user: SessionUser, mailboxId: number): Promi
   await query("UPDATE mailboxes SET status = 'excluded', managed = true, updated_at = now() WHERE id = $1", [mailboxId]);
   await stopWatch(mailbox.email);
   clearMailboxCache();
+  invalidateOrgContext();
   await audit(user, 'remove_mailbox', null, { mailboxId, email: mailbox.email });
   return { email: mailbox.email };
 }
@@ -228,6 +232,7 @@ export async function createClient(
   }
 
   await rematchUnmatchedItems();
+  invalidateOrgContext();
   await audit(user, 'create_client', null, { clientId, name });
   return { id: clientId, name, rejectedDomains };
 }
@@ -245,6 +250,7 @@ export async function addClientDomain(user: SessionUser, clientId: number, domai
     [clientId, d],
   );
   await rematchUnmatchedItems();
+  invalidateOrgContext();
   await audit(user, 'add_client_domain', null, { clientId, domain: d });
 }
 
@@ -271,6 +277,7 @@ export async function addClientPattern(
     [clientId, pattern, priority, note ?? null, user.email],
   );
   await rematchUnmatchedItems();
+  invalidateOrgContext();
   await audit(user, 'add_client_pattern', null, { clientId, pattern });
 }
 

@@ -51,46 +51,72 @@ export interface ThreadView {
  * conversation first so the composer never opens on stale state.
  */
 export async function getThread(user: SessionUser, itemId: number, opts: { refresh?: boolean } = {}): Promise<ThreadView> {
-  const item = await one<any>(
-    `SELECT i.*, c.subject, c.id AS conversation_id, cl.name AS client_name
-       FROM items i JOIN conversations c ON c.id = i.conversation_id
-       LEFT JOIN clients cl ON cl.id = i.client_id
-      WHERE i.id = $1`,
-    [itemId],
-  );
-  if (!item) throw new HttpError(404, 'item not found');
-
   if (opts.refresh) {
+    const target = await one<{ conversation_id: string }>('SELECT conversation_id FROM items WHERE id = $1', [itemId]);
+    if (!target) throw new HttpError(404, 'item not found');
     try {
-      await refreshConversation(Number(item.conversation_id));
+      await refreshConversation(Number(target.conversation_id));
     } catch (err) {
       logger.warn({ itemId, err }, 'pre-composer refresh failed; showing stored state');
     }
   }
 
-  // These four do not depend on each other; on a remote database the round
-  // trips dominate, so issue them together.
-  const [rows, ctx, ownThread, lock] = await Promise.all([
+  // Everything keys off the item id, so these run as one round trip rather
+  // than a lookup followed by four dependent queries.
+  const [itemRows, rows, ctx, ownThreadRows, lockRows, holders, otherMailboxes] = await Promise.all([
     query<any>(
-      `SELECT id, rfc_message_id, from_email, to_emails, cc_emails, bcc_emails, subject, internal_date,
-              direction, body_text_trunc, snippet, is_draft, filter_reason
-         FROM messages WHERE conversation_id = $1 ORDER BY internal_date ASC`,
-      [item.conversation_id],
+      `SELECT i.*, c.subject, c.id AS conversation_id, cl.name AS client_name
+         FROM items i JOIN conversations c ON c.id = i.conversation_id
+         LEFT JOIN clients cl ON cl.id = i.client_id
+        WHERE i.id = $1`,
+      [itemId],
+    ),
+    query<any>(
+      `SELECT m.id, m.rfc_message_id, m.from_email, m.to_emails, m.cc_emails, m.bcc_emails,
+              m.subject, m.internal_date, m.direction, m.body_text_trunc, m.snippet,
+              m.is_draft, m.filter_reason
+         FROM messages m
+         JOIN items i ON i.conversation_id = m.conversation_id
+        WHERE i.id = $1
+        ORDER BY m.internal_date ASC`,
+      [itemId],
     ),
     loadOrgContext(),
-    one<{ gmail_thread_id: string }>(
+    query<{ gmail_thread_id: string }>(
       `SELECT mc.gmail_thread_id FROM message_copies mc
          JOIN messages m ON m.id = mc.message_id
+         JOIN items i ON i.conversation_id = m.conversation_id
          JOIN mailboxes mb ON mb.id = mc.mailbox_id
-        WHERE m.conversation_id = $1 AND mb.email = $2 AND mc.deleted = false
+        WHERE i.id = $1 AND mb.email = $2 AND mc.deleted = false
         ORDER BY m.internal_date DESC LIMIT 1`,
-      [item.conversation_id, user.email],
+      [itemId, user.email],
     ),
-    one<{ user_email: string }>(
+    query<{ user_email: string }>(
       'SELECT user_email FROM item_locks WHERE item_id = $1 AND expires_at > now()',
       [itemId],
     ),
+    // Which of our mailboxes hold this thread, and (for an admin) every other
+    // active mailbox. Both only need the item id and the role.
+    query<{ email: string }>(
+      `SELECT DISTINCT mb.email FROM message_copies mc
+         JOIN messages m ON m.id = mc.message_id
+         JOIN items i ON i.conversation_id = m.conversation_id
+         JOIN mailboxes mb ON mb.id = mc.mailbox_id
+        WHERE i.id = $1 AND mc.deleted = false AND mb.status = 'active'
+        ORDER BY mb.email`,
+      [itemId],
+    ),
+    user.role === 'admin'
+      ? query<{ email: string }>("SELECT email FROM mailboxes WHERE status = 'active' ORDER BY kind DESC, email")
+      : user.canSendAsShared
+        ? query<{ email: string }>("SELECT email FROM mailboxes WHERE kind = 'shared' AND status = 'active'")
+        : Promise.resolve([] as { email: string }[]),
   ]);
+
+  const item = itemRows[0];
+  if (!item) throw new HttpError(404, 'item not found');
+  const ownThread = ownThreadRows[0] ?? null;
+  const lock = lockRows[0] ?? null;
 
   const messages: ThreadMessage[] = rows.map((r) => ({
     id: Number(r.id),
@@ -122,31 +148,9 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
   const baseSubject = normalizeSubject(item.subject ?? '');
   const replySubject = baseSubject ? `Re: ${item.subject.replace(/^((re|fwd?)\s*:\s*)+/i, '')}` : 'Re:';
 
-  // Which of our mailboxes actually hold this thread; replying from one of
-  // them keeps the conversation in the right place for the client.
-  const holders = await query<{ email: string }>(
-    `SELECT DISTINCT mb.email FROM message_copies mc
-       JOIN messages m ON m.id = mc.message_id
-       JOIN mailboxes mb ON mb.id = mc.mailbox_id
-      WHERE m.conversation_id = $1 AND mc.deleted = false AND mb.status = 'active'
-      ORDER BY mb.email`,
-    [item.conversation_id],
-  );
-
-  const sendAs = [...holders.map((h) => h.email)];
-  if (user.role === 'admin') {
-    // An admin oversees every mailbox, so any of them can be the sender.
-    const all = await query<{ email: string }>(
-      "SELECT email FROM mailboxes WHERE status = 'active' ORDER BY kind DESC, email",
-    );
-    sendAs.push(...all.map((a) => a.email));
-  } else {
-    sendAs.push(user.email);
-    if (user.canSendAsShared) {
-      const shared = await query<{ email: string }>("SELECT email FROM mailboxes WHERE kind = 'shared' AND status = 'active'");
-      sendAs.push(...shared.map((s) => s.email));
-    }
-  }
+  // Replying from a mailbox that already holds the thread keeps the
+  // conversation in one place for the client, so those come first.
+  const sendAs = [...new Set([...holders.map((h) => h.email), ...otherMailboxes.map((m) => m.email), user.email])];
 
   return {
     itemId: Number(item.id),

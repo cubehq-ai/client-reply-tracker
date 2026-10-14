@@ -1,4 +1,5 @@
 import { query, tx } from '../db/pool.js';
+import { invalidateOrgContext } from '../pipeline/context.js';
 import { logger } from '../lib/logger.js';
 import { clearMailboxCache } from '../pipeline/ingest.js';
 
@@ -104,6 +105,7 @@ export async function applyRoster(roster: RosterEntry[] = DEFAULT_ROSTER): Promi
   }
 
   clearMailboxCache();
+  invalidateOrgContext();
   logger.info({ teams: teamIds.size, mailboxes: roster.length, added: added.length }, 'roster applied');
   return { teams: teamIds.size, mailboxes: roster.length, added };
 }

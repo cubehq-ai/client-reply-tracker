@@ -23,7 +23,27 @@ export interface OrgContext {
   isSharedInbox(email: string): boolean;
 }
 
+/**
+ * Building the context is ~13 queries (domains, rules, mailboxes, clients,
+ * contacts, exclusions). It changes only when settings change, so it is cached
+ * briefly rather than rebuilt on every thread open and every ingested message.
+ */
+let cached: { value: OrgContext; at: number } | null = null;
+const CONTEXT_TTL_MS = 60_000;
+
 export async function loadOrgContext(): Promise<OrgContext> {
+  if (cached && Date.now() - cached.at < CONTEXT_TTL_MS) return cached.value;
+  const value = await buildOrgContext();
+  cached = { value, at: Date.now() };
+  return value;
+}
+
+/** Call after anything that changes clients, rules, mailboxes or exclusions. */
+export function invalidateOrgContext(): void {
+  cached = null;
+}
+
+async function buildOrgContext(): Promise<OrgContext> {
   const [domains, rules, mailboxes, clients, ams, exclusions, matchRules, contacts] = await Promise.all([
     query<{ domain: string; is_group: boolean }>('SELECT domain, is_group FROM org_domains'),
     query<{ type: string; value: string }>('SELECT type, value FROM rules'),

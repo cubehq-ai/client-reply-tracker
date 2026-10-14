@@ -1,4 +1,5 @@
 import { query, tx } from '../db/pool.js';
+import { invalidateOrgContext } from '../pipeline/context.js';
 import { logger } from '../lib/logger.js';
 import { loadOrgContext } from '../pipeline/context.js';
 import { recomputeItemState } from '../pipeline/stateMachine.js';
@@ -49,6 +50,7 @@ export async function createRule(user: SessionUser, input: RuleInput): Promise<{
       input.priority ?? 100, input.enabled ?? true, input.note ?? null, user.email,
     ],
   );
+  invalidateOrgContext();
   await audit(user, 'create_match_rule', null, { name: input.name, action: input.action });
   return { id: Number(rows[0]!.id) };
 }
@@ -74,11 +76,13 @@ export async function updateRule(user: SessionUser, id: number, patch: Partial<R
       patch.priority ?? null, patch.enabled ?? null, patch.note ?? merged.note ?? null,
     ],
   );
+  invalidateOrgContext();
   await audit(user, 'update_match_rule', null, { id, ...patch });
 }
 
 export async function deleteRule(user: SessionUser, id: number): Promise<void> {
   await query('DELETE FROM match_rules WHERE id = $1', [id]);
+  invalidateOrgContext();
   await audit(user, 'delete_match_rule', null, { id });
 }
 

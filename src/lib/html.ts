@@ -40,7 +40,9 @@ function safeFromCodePoint(code: number): string {
 
 /** Tags that end a line of text. */
 const BLOCK_END = /<\/(p|div|tr|li|ul|ol|h[1-6]|blockquote|table|section|article|header|footer|pre)\s*>/gi;
-const BLOCK_START = /<(p|div|tr|li|h[1-6]|blockquote|section|article|header|footer|pre)(\s[^>]*)?>/gi;
+// Only a paragraph opens a blank line. A <div> per line is how mail clients
+// write signatures, and treating those as paragraphs double-spaces them.
+const BLOCK_START = /<(p|h[1-6]|blockquote)(\s[^>]*)?>/gi;
 
 export function htmlToText(html: string): string {
   if (!html) return '';
@@ -54,6 +56,18 @@ export function htmlToText(html: string): string {
     .replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, label: string) => {
       const clean = label.replace(/<[^>]+>/g, '').trim();
       if (!clean) return href;
+
+      // A mailto: or tel: target repeats what the label already says, and an
+      // href whose address the label contains adds nothing either.
+      const bare = href
+        .replace(/^(mailto:|tel:)/i, '')
+        .replace(/^https?:\/\//i, '')
+        .replace(/^www\./i, '')
+        .replace(/\/$/, '')
+        .replace(/[?#].*$/, '');
+      const normalise = (v: string) => v.toLowerCase().replace(/[^a-z0-9@.]/g, '');
+      if (/^(mailto:|tel:)/i.test(href) || normalise(clean).includes(normalise(bare))) return clean;
+
       return clean === href ? clean : `${clean} \u0001${href}\u0002`;
     })
     .replace(/<br\s*\/?>/gi, '\n')
@@ -69,9 +83,20 @@ export function htmlToText(html: string): string {
     .replace(/\u0002/g, '>');
 
   return text
+    // Inline-image placeholders are an artefact of the mail client, not content.
+    .replace(/\[cid:[^\]]+\]/gi, '')
     .split('\n')
     // Collapse runs of spaces inside a line, but keep the line itself.
     .map((line) => line.replace(/[ \u00a0]+/g, ' ').trimEnd())
+    // HTML signatures are often tables, which leave lines holding nothing but
+    // a separator once the markup is gone.
+    .filter((line, i, all) => {
+      const t = line.trim();
+      if (t === '' ) return true;
+      if (/^[|,;·•\-–—\u2502]+$/.test(t)) return false;
+      // A lone comma or pipe trailing a real line is table debris too.
+      return !(t.length <= 2 && /^[,|]/.test(t) && (all[i - 1] ?? '').trim() !== '');
+    })
     .join('\n')
     // At most one blank line between paragraphs.
     .replace(/\n{3,}/g, '\n\n')

@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { invalidateOrgContext } from '../pipeline/context.js';
 import { query, tx } from '../db/pool.js';
 import { config, fixturesEnabled } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
@@ -139,6 +140,7 @@ export async function syncClients(source = getClientSource()): Promise<ClientSyn
   }
 
   const rematchedItems = await rematchUnmatchedItems();
+  invalidateOrgContext();
   logger.info({ clients: records.length, newDomains: newDomains.length, rematchedItems }, 'client sync complete');
   return { clients: records.length, newDomains, rematchedItems, rejectedFreeDomains };
 }

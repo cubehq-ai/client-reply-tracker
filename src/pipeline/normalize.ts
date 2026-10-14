@@ -78,6 +78,9 @@ export function parseReferences(value: string | undefined): string[] {
 const QUOTE_MARKERS = [
   /^On .+ wrote:\s*$/i,
   /^Begin forwarded message:/i,
+  /^CONFIDENTIALITY NOTICE[: ]/i,
+  /^This (e-?mail|message) (and any attachments )?(is|are) (intended|confidential)/i,
+  /^Disclaimer[: ]/i,
   /^-{3,}\s*Forwarded message\s*-{3,}/i,
   /^-{2,}\s*Original Message\s*-{2,}$/i,
   /^_{5,}$/,
