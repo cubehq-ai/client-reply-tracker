@@ -135,8 +135,11 @@ export async function ingestMessage(raw: RawMessage, mailbox: string, ctx: OrgCo
     const closed = verdict.reason === 'filtered' || (classification !== null && !classification.needsReply);
     const initialState: ItemState = closed ? 'no_reply_needed' : 'needs_reply';
     const reason = verdict.reason === 'filtered' ? 'filtered' : closed ? 'not_needed' : null;
+    // When a message is a duplicate we do not re-classify, so there is no
+    // fresh verdict. Falling back to `false` would clear a flag the stored
+    // confidence still justifies, so leave it to the COALESCE below.
     const lowConfidence =
-      classification !== null && classification.confidence < config.classifier.threshold;
+      classification !== null ? classification.confidence < config.classifier.threshold : null;
 
     const itemRes = await c.query<{ id: string }>(
       `INSERT INTO items (conversation_id, source, state, reason, client_id, owner_user_id, watchers,
@@ -149,7 +152,7 @@ export async function ingestMessage(raw: RawMessage, mailbox: string, ctx: OrgCo
          watchers       = ARRAY(SELECT DISTINCT unnest(items.watchers || EXCLUDED.watchers)),
          needs_reply_confidence = COALESCE(EXCLUDED.needs_reply_confidence, items.needs_reply_confidence),
          summary        = COALESCE(EXCLUDED.summary, items.summary),
-         low_confidence = EXCLUDED.low_confidence,
+         low_confidence = COALESCE(EXCLUDED.low_confidence, items.low_confidence),
          unmatched_client = EXCLUDED.unmatched_client,
          updated_at     = now()
        RETURNING id`,
