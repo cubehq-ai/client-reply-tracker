@@ -296,9 +296,48 @@ export async function testClientPattern(pattern: string): Promise<{ valid: boole
   return { valid: true, matches: senders.map((s) => s.from_email).filter((e) => re.test(e)).slice(0, 50) };
 }
 
+/** Strips everything but letters and digits, for comparing a name to a domain. */
+function normaliseLabel(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Suggests a client for an unmatched sender by comparing the domain's
+ * registrable label to the client's slug and name: daryl@norbot.ca against the
+ * client "Norbot". It is only ever a suggestion — a one-click confirmation,
+ * never an automatic claim, because a name collision with a vendor is easy.
+ */
+export async function suggestClientsForDomains(domains: string[]): Promise<Map<string, { id: number; name: string }>> {
+  const out = new Map<string, { id: number; name: string }>();
+  if (domains.length === 0) return out;
+
+  const clients = await query<{ id: string; name: string; slug: string | null }>(
+    'SELECT c.id, c.name, NULL AS slug FROM clients c WHERE c.archived = false',
+  );
+  const byLabel = new Map<string, { id: number; name: string }>();
+  const ambiguous = new Set<string>();
+  for (const c of clients) {
+    for (const candidate of [c.name, c.slug ?? '']) {
+      const label = normaliseLabel(candidate);
+      if (label.length < 4) continue;
+      if (byLabel.has(label) && byLabel.get(label)!.id !== Number(c.id)) { ambiguous.add(label); continue; }
+      byLabel.set(label, { id: Number(c.id), name: c.name });
+    }
+  }
+
+  for (const domain of domains) {
+    // Compare against the registrable label: norbot.ca -> norbot
+    const label = normaliseLabel(domain.split('.')[0] ?? '');
+    if (label.length < 4 || ambiguous.has(label)) continue;
+    const hit = byLabel.get(label);
+    if (hit) out.set(domain, hit);
+  }
+  return out;
+}
+
 /** Senders we could not map, most frequent first — the Unmatched work list. */
 export async function unmatchedSenders(): Promise<any[]> {
-  return query(
+  const rows = await query<any>(
     `SELECT m.from_email, m.from_domain,
             count(DISTINCT i.id)::int AS items,
             MAX(m.internal_date) AS last_seen
@@ -309,6 +348,37 @@ export async function unmatchedSenders(): Promise<any[]> {
       ORDER BY items DESC, last_seen DESC
       LIMIT 200`,
   );
+
+  const suggestions = await suggestClientsForDomains([...new Set(rows.map((r) => r.from_domain).filter(Boolean))]);
+  return rows.map((r) => ({ ...r, suggestion: suggestions.get(r.from_domain) ?? null }));
+}
+
+/**
+ * Links every unmatched domain that has a confident name match. Each link is
+ * the same operation a human would perform from the Unmatched list, applied in
+ * bulk; free-provider domains are refused as always.
+ */
+export async function applyDomainSuggestions(user: SessionUser): Promise<{ linked: { domain: string; client: string }[]; skipped: string[] }> {
+  const rows = await unmatchedSenders();
+  const linked: { domain: string; client: string }[] = [];
+  const skipped: string[] = [];
+  const done = new Set<string>();
+
+  for (const row of rows) {
+    const domain: string | null = row.from_domain ?? null;
+    if (!domain || !row.suggestion || done.has(domain)) continue;
+    done.add(domain);
+    try {
+      await addClientDomain(user, row.suggestion.id, domain);
+      linked.push({ domain, client: row.suggestion.name });
+    } catch {
+      skipped.push(domain);
+    }
+  }
+
+  await rematchUnmatchedItems();
+  logger.info({ linked: linked.length, skipped: skipped.length }, 'applied domain suggestions');
+  return { linked, skipped };
 }
 
 // ---------- saved views ----------

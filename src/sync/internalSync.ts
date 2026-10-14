@@ -41,6 +41,43 @@ interface MongoClient {
   is_active?: boolean;
   is_churned?: boolean;
   notification_emails?: unknown;
+  website_access_id?: unknown;
+  seo?: { gsc?: { site_url?: unknown }; ga4?: { name?: unknown }; gmc?: { name?: unknown } };
+}
+
+/** Pulls a bare hostname out of a url, an sc-domain: property or a label. */
+export function hostFrom(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  let raw = value.trim().toLowerCase();
+  if (!raw || raw.includes('@')) return null;
+
+  // GA4 and GMC names look like "www.thinoptics.com - GA4".
+  raw = raw.replace(/\s+-\s+(ga4|gmc|gsc|merchant.*)$/i, '').trim();
+  raw = raw.replace(/^sc-domain:/, '');
+  if (!/^https?:\/\//.test(raw)) raw = `https://${raw}`;
+
+  try {
+    const host = new URL(raw).hostname.replace(/^www\./, '');
+    // Must look like a real registrable domain.
+    if (!/^([a-z0-9][a-z0-9-]*\.)+[a-z]{2,}$/.test(host)) return null;
+    return host;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every place a client's own domain appears in the dashboard. Search Console
+ * is the strongest of these: it is a verified property, not a guess.
+ */
+export function domainsFromClientDoc(doc: MongoClient): string[] {
+  const out = [
+    hostFrom(doc.seo?.gsc?.site_url),
+    hostFrom(doc.seo?.ga4?.name),
+    hostFrom(doc.seo?.gmc?.name),
+    hostFrom(doc.website_access_id),
+  ].filter((d): d is string => d !== null);
+  return [...new Set(out)];
 }
 
 /** `service_type` is a list of services on the dashboard, not a single value. */
@@ -83,9 +120,13 @@ export async function buildClientRecords(): Promise<{ records: ClientRecord[]; s
 
     perClient.set(key, { doc, contacts });
 
-    for (const email of contacts) {
-      const d = domainOf(email);
-      if (!d || free.has(d)) continue;
+    // A domain can come from a contact address or from a connected property.
+    const candidates = [
+      ...contacts.map((e) => domainOf(e)),
+      ...domainsFromClientDoc(doc),
+    ];
+    for (const d of candidates) {
+      if (!d || free.has(d) || orgDomains.has(d)) continue;
       const owners = domainOwners.get(d) ?? new Set<string>();
       owners.add(name);
       domainOwners.set(d, owners);
@@ -108,9 +149,8 @@ export async function buildClientRecords(): Promise<{ records: ClientRecord[]; s
     if (doc.is_churned) churned += 1;
 
     const domains: string[] = [];
-    for (const email of contacts) {
-      const d = domainOf(email);
-      if (!d) continue;
+    for (const d of [...contacts.map((e) => domainOf(e)), ...domainsFromClientDoc(doc)]) {
+      if (!d || orgDomains.has(d)) continue;
       if (free.has(d)) { freeDomainsSkipped.add(d); continue; }
       // Only an unambiguous domain may stand for the whole client.
       if (ambiguous.has(d)) continue;

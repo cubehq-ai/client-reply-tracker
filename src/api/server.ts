@@ -29,7 +29,7 @@ import {
 import { draftReply, getThread, sendReply } from './compose.js';
 import { clientOverview, inboxFacets, listQueue, queueCounts, teamOverview, type QueueFilters, type QueueName } from './queues.js';
 import {
-  addClientDomain, addClientPattern, addMailbox, addMailboxesBulk, createClient, createSavedView,
+  addClientDomain, addClientPattern, addMailbox, addMailboxesBulk, applyDomainSuggestions, createClient, createSavedView,
   createTeam, deleteSavedView, deleteTeam, listClientsDetailed, listMailboxes, listSavedViews,
   listTeams, removeClientDomain, removeClientPattern, removeMailbox, renameTeam, testClientPattern,
   unmatchedSenders, updateMailbox,
@@ -494,6 +494,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     const user = await adminOnly(req);
     await removeClientPattern(user, Number((req.params as any).id));
     return { ok: true };
+  });
+
+  app.post('/api/settings/apply-suggestions', async (req) => {
+    const user = await adminOnly(req);
+    return applyDomainSuggestions(user);
   });
 
   app.post('/api/settings/test-pattern', async (req) => {

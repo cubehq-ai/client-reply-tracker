@@ -227,17 +227,38 @@ function Clients({ onChanged }: { onChanged: () => void }) {
       </div>
 
       <div className="card" style={{ marginBottom: 14 }}>
-        <div className="section-title">Unmatched senders <span className="muted">· link these to a client</span></div>
+        <div className="section-title">
+          <span>Unmatched senders <span className="muted">· link these to a client</span></span>
+          {data.unmatched.some((u: any) => u.suggestion) && (
+            <button className="btn small primary" onClick={() => act(async () => {
+              const res = await api.settingsPost('apply-suggestions');
+              setNotice(`Linked ${res.linked.length} domain(s).`);
+            }, 'Suggestions applied.')}>
+              Apply {new Set(data.unmatched.filter((u: any) => u.suggestion).map((u: any) => u.from_domain)).size} suggestion(s)
+            </button>
+          )}
+        </div>
         <table>
-          <thead><tr><th>Sender</th><th>Domain</th><th className="num">Items</th><th>Last seen</th><th>Link to</th></tr></thead>
+          <thead><tr><th>Sender</th><th>Domain</th><th className="num">Items</th><th>Last seen</th><th>Suggested</th><th>Link to</th></tr></thead>
           <tbody>
-            {data.unmatched.length === 0 && <tr><td colSpan={5} className="muted">Nothing unmatched. </td></tr>}
+            {data.unmatched.length === 0 && <tr><td colSpan={6} className="muted">Nothing unmatched.</td></tr>}
             {data.unmatched.map((u) => (
               <tr key={u.from_email}>
                 <td className="mono">{u.from_email}</td>
                 <td className="mono muted">{u.from_domain}</td>
                 <td className="num">{u.items}</td>
                 <td className="muted">{timeAgo(u.last_seen)}</td>
+                <td>
+                  {u.suggestion ? (
+                    <button
+                      className="btn small primary"
+                      title={`Link ${u.from_domain} to ${u.suggestion.name}`}
+                      onClick={() => act(() => api.settingsPost(`clients/${u.suggestion.id}/domains`, { domain: u.from_domain }), 'Linked.')}
+                    >
+                      {u.suggestion.name}
+                    </button>
+                  ) : <span className="muted">—</span>}
+                </td>
                 <td>
                   <select defaultValue="" onChange={(e) => {
                     if (!e.target.value) return;
