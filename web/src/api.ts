@@ -76,6 +76,14 @@ export const api = {
   settingsPatch: (path: string, body?: unknown) =>
     request<any>(`/api/settings/${path}`, { method: 'PATCH', body: JSON.stringify(body ?? {}) }),
   settingsDelete: (path: string) => request<any>(`/api/settings/${path}`, { method: 'DELETE' }),
+
+  rules: () => request<{ rules: any[] }>('/api/settings/rules'),
+  createRule: (rule: unknown) => request<any>('/api/settings/rules', { method: 'POST', body: JSON.stringify(rule) }),
+  updateRule: (id: number, patch: unknown) =>
+    request<any>(`/api/settings/rules/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteRule: (id: number) => request<any>(`/api/settings/rules/${id}`, { method: 'DELETE' }),
+  rulePreview: (rule: unknown) => request<any>('/api/settings/rules/preview', { method: 'POST', body: JSON.stringify(rule) }),
+  reapplyRules: () => request<any>('/api/settings/rules/reapply', { method: 'POST' }),
   clients: (view: string) => request<{ clients: any[] }>(`/api/clients?view=${view}`),
   users: () => request<{ users: any[] }>('/api/users'),
   metrics: () => request<any>('/api/metrics'),

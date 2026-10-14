@@ -37,6 +37,8 @@ import {
 import { applyRoster } from '../sync/roster.js';
 import { inspectInternalDb, testInternalDb } from '../sync/internalDb.js';
 import { checkUnrespondedItems } from '../sync/hourly.js';
+import { createRule, deleteRule, previewRule, reapplyRules, updateRule } from './rulesApi.js';
+import { listMatchRules } from '../pipeline/rules.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webDist = join(here, '..', '..', 'web', 'dist');
@@ -500,6 +502,47 @@ export async function buildServer(): Promise<FastifyInstance> {
     const user = await adminOnly(req);
     return applyDomainSuggestions(user);
   });
+
+  // ---------- matching rules ----------
+  const ruleBody = z.object({
+    name: z.string(),
+    field: z.enum(['from_email', 'from_domain', 'subject', 'body', 'to_email', 'any_recipient', 'header']),
+    headerName: z.string().nullable().optional(),
+    op: z.enum(['regex', 'contains', 'equals', 'ends_with']).default('regex'),
+    pattern: z.string(),
+    action: z.enum(['assign_client', 'ignore', 'allow', 'set_priority']),
+    clientId: z.number().nullable().optional(),
+    filterReason: z.string().nullable().optional(),
+    priorityValue: z.enum(['high', 'normal', 'low']).nullable().optional(),
+    priority: z.number().optional(),
+    enabled: z.boolean().optional(),
+    note: z.string().nullable().optional(),
+  });
+
+  app.get('/api/settings/rules', async (req) => {
+    await requireUser(req);
+    return { rules: await listMatchRules() };
+  });
+
+  app.post('/api/settings/rules', async (req) => createRule(await adminOnly(req), ruleBody.parse(req.body)));
+
+  app.patch('/api/settings/rules/:id', async (req) => {
+    const user = await adminOnly(req);
+    await updateRule(user, Number((req.params as any).id), ruleBody.partial().parse(req.body));
+    return { ok: true };
+  });
+
+  app.delete('/api/settings/rules/:id', async (req) => {
+    await deleteRule(await adminOnly(req), Number((req.params as any).id));
+    return { ok: true };
+  });
+
+  app.post('/api/settings/rules/preview', async (req) => {
+    await requireUser(req);
+    return previewRule(ruleBody.partial({ name: true }).parse({ name: 'preview', ...(req.body as object) }) as any);
+  });
+
+  app.post('/api/settings/rules/reapply', async (req) => reapplyRules(await adminOnly(req)));
 
   app.post('/api/settings/test-pattern', async (req) => {
     await requireUser(req);

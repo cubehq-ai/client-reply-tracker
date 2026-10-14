@@ -160,7 +160,7 @@ export function App() {
           <TeamsView teams={teams} onPick={(id) => goInbox({ source: 'gmail', view: 'all', teamId: String(id) }, 'Inbox')} />
         )}
         {page.kind === 'metrics' && <Metrics />}
-        {page.kind === 'settings' && <Settings onChanged={refresh} />}
+        {page.kind === 'settings' && <Settings onChanged={refresh} clients={clients} />}
         </ErrorBoundary>
       </main>
 

@@ -9,6 +9,7 @@ import type { OrgContext } from './context.js';
 import { applyFilters } from './filters.js';
 import { normalize, type NormalizedMessage } from './normalize.js';
 import { resolveOwnership, userIdForEmail } from './ownership.js';
+import { evaluateRules, recordRuleMatches } from './rules.js';
 import { recomputeItemState, type ItemState } from './stateMachine.js';
 
 export interface IngestResult {
@@ -64,14 +65,27 @@ export async function ingestMessage(raw: RawMessage, mailbox: string, ctx: OrgCo
     return { skipped: false, reason: 'internal_reply_event', conversationId: stored.conversationId, state: result?.state, duplicate: stored.duplicate };
   }
 
-  // --- Client match, then filters (the filter rules need to know if it's a client).
-  const match = matchClient(ctx.clients, msg.fromEmail, externalParticipants.filter((e) => e !== msg.fromEmail));
-  const verdict = applyFilters(msg, {
+  // --- User-authored rules run first: they can name the client, force a
+  // message through the filters, or filter it out on their own terms.
+  const ruleVerdict = evaluateRules(ctx.matchRules, msg);
+  if (ruleVerdict.matchedRuleIds.length) void recordRuleMatches(ruleVerdict.matchedRuleIds);
+
+  const match = ruleVerdict.clientId !== null
+    ? { clientId: ruleVerdict.clientId, matchedOn: 'rule' as const, matchedValue: null }
+    : matchClient(ctx.clients, msg.fromEmail, externalParticipants.filter((e) => e !== msg.fromEmail));
+
+  const standard = applyFilters(msg, {
     isClient: match.clientId !== null,
     blockedSenders: ctx.blockedSenders,
     blockedDomains: ctx.blockedDomains,
     allowedSenders: ctx.allowedSenders,
   });
+
+  const verdict = ruleVerdict.ignoreReason
+    ? { ...standard, filtered: true, reason: ruleVerdict.ignoreReason }
+    : ruleVerdict.allowed
+      ? { ...standard, filtered: false, reason: null }
+      : standard;
 
   await query('UPDATE messages SET filter_reason = $2, is_auto = $3, is_bounce = $4 WHERE id = $1', [
     stored.messageId, verdict.reason, verdict.isAuto, verdict.isBounce,
@@ -134,7 +148,7 @@ export async function ingestMessage(raw: RawMessage, mailbox: string, ctx: OrgCo
         match.clientId,
         ownerUserId,
         ownership.watchers,
-        classification?.priority ?? 'normal',
+        ruleVerdict.priority ?? classification?.priority ?? 'normal',
         classification?.intent ?? null,
         classification?.confidence ?? null,
         classification?.summary ?? msg.subject.slice(0, 300),

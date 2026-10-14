@@ -76,72 +76,92 @@ mode is never ambiguous.
 
 ---
 
-## 3. Switching from the fakes to real Google access
+## 3. Google Workspace access
 
-Nothing in the pipeline changes; only configuration does.
+**This is live.** Domain-wide delegation is authorised and all 19 mailboxes sync.
 
-**Step 1 — Google Cloud.** In the project that owns the service account, enable
-the **Gmail API** and the **Admin SDK API**.
+Service account: `client-reply-tracker@spend-monitor-511010.iam.gserviceaccount.com`
+Client ID: `116736478389350149311`
 
-**Step 2 — domain-wide delegation.** In the Google Workspace Admin console →
-Security → Access and data control → API controls → Domain-wide delegation, add
-the service account's **client ID** (the numeric `client_id` in the key file)
-with exactly these scopes:
+Authorised scopes (Admin console → Security → Access and data control → API
+controls → Domain-wide delegation):
 
 ```
-https://www.googleapis.com/auth/gmail.readonly
-https://www.googleapis.com/auth/gmail.send
-https://www.googleapis.com/auth/gmail.compose
 https://www.googleapis.com/auth/gmail.modify
+https://www.googleapis.com/auth/gmail.send
 https://www.googleapis.com/auth/admin.directory.user.readonly
 ```
 
-`gmail.modify` is only needed if you want tracker labels written back into
-Gmail; drop it otherwise and leave `GMAIL_WRITE_ENABLED=false`.
+Requested scopes must match this list **exactly**. Domain-wide delegation
+rejects the entire token request if any single requested scope is not
+authorised — it does not grant what it can and skip the rest. They are set by
+`GOOGLE_GMAIL_SCOPES` / `GOOGLE_DIRECTORY_SCOPES`, defaulting to
+`gmail.modify` + `gmail.send`, which is all this tool needs: `gmail.modify`
+already covers reading and draft creation, so `gmail.readonly` and
+`gmail.compose` are redundant.
 
-**Step 3 — environment.**
+Verify at any time:
 
 ```bash
-GOOGLE_SERVICE_ACCOUNT_FILE=/absolute/path/to/key.json
-GOOGLE_ADMIN_SUBJECT=a-super-admin@yourdomain.com   # for Directory API calls
-GOOGLE_BACKEND=real
-ORG_DOMAINS=yourdomain.com
-GROUP_ADDRESSES=support@yourdomain.com,hello@yourdomain.com
+npx tsx src/cli.ts check-google
 ```
 
-**Step 4 — go in read-only first.** Leave `SEND_ENABLED=false` and
-`GMAIL_WRITE_ENABLED=false`. Run `npx tsx src/cli.ts discover` then
-`npx tsx src/cli.ts sync` and check the queues. Nothing can be sent or modified
-in this mode: a send logs the full MIME to the server instead.
+It makes real Directory and Gmail calls, reports Google's own error, and
+prints the client ID and scope list an admin needs.
 
-**Step 5 — before the first real sync, set the exclusion list.** Admin →
-Exclusions, or `EXCLUDED_MAILBOXES` / `EXCLUDED_LABELS`. HR, legal and
-founders' mailboxes should go in before any backfill reads them, not after.
+**Known gap:** the Directory API returns 403. It is only used to auto-discover
+mailboxes, and the watch list comes from the roster and Settings instead, so
+nothing depends on it. To fix: enable the Admin SDK on project
+`spend-monitor-511010` and set `GOOGLE_ADMIN_SUBJECT` to a real super admin.
 
-**Step 6 — enable sending** by setting `SEND_ENABLED=true` and restarting.
+**Least privilege option:** `gmail.modify` also permits changing labels and
+trashing mail. This tool never does (`GMAIL_WRITE_ENABLED=false`), but you can
+swap it for `gmail.readonly` + `gmail.compose` in the Admin console and set
+`GOOGLE_GMAIL_SCOPES` to match.
 
-**Pub/Sub (optional, for sub-minute latency).** Create a topic, grant
-`gmail-api-push@system.gserviceaccount.com` the Publisher role on it, point a
-push subscription at `https://your-host/pubsub/push?token=<secret>`, then set
-`PUBSUB_TOPIC` and `PUBSUB_VERIFICATION_TOKEN`. Without this the system runs on
-the 10-minute poller, which is fully functional.
+### Sending
 
-**Classifier.** Set `ANTHROPIC_API_KEY` to use the Haiku-class classifier and
-AI drafts. Without it everything still works on heuristics plus the locally
-trained model.
+`SEND_ENABLED=false` by default: a send builds the full MIME and logs it
+instead of calling Gmail. Set it to `true` when you want replies to leave.
 
-**Client data.** Set `CLIENT_DB_URL` to sync clients and domains from the
-dashboard database; otherwise the fixture client list is used.
+---
+
+## 3b. The internal dashboard (MongoDB)
+
+Clients, teams and employees are read from the agency dashboard's MongoDB
+(`agency_dashboard`), **read only**. See §8 for how that is enforced.
+
+What is derived from it:
+
+| This tool | Comes from |
+|---|---|
+| Clients | `clients.name`, `clients.id` |
+| Services | `clients.service_type` (an array, joined for display) |
+| Client domains | `seo.gsc.site_url` (verified Search Console property), `seo.ga4.name`, `seo.gmc.name`, `website_access_id`, and the external addresses in `notification_emails` |
+| Client contacts | external addresses in `notification_emails` |
+| Churned | `clients.is_churned` → archived |
+| Teams | `team_members.role` |
+
+A domain is only claimed when exactly one client uses it. Ten domains are
+shared between clients (`1933group.com` covers three restaurants), so claiming
+them would file one client's mail under another; those are reported instead and
+their individual addresses still match exactly.
+
+Commands: `inspect-internal-mongo`, `preview-internal-clients`, `sync-clients`,
+`sync-churned`, `sync-teams`.
 
 ---
 
 ## 4. Test results
 
 ```
-Test Files  9 passed (9)
-     Tests  86 passed (86)
-  Duration  ~6s
+Test Files  19 passed (19)
+     Tests  172 passed (172)
 ```
+
+Plus browser QA: `QA_EMAIL=... QA_PASSWORD=... node scripts/qa.mjs` drives the
+real app and asserts layout invariants (no horizontal overflow, consistent
+control heights, composer closed by default, no console errors).
 
 Run with `npm test`. Tests use a **local** Postgres (`TEST_DATABASE_URL`,
 defaulting to `postgres://localhost:5432/client_reply_tracker`) and never touch
@@ -205,7 +225,35 @@ Per CLAUDE.md, with no further input required:
 
 ---
 
-## 7. What is left for a human
+## 7. Matching: how mail is attributed
+
+Entirely deterministic. No model decides who a client is.
+
+1. Exact sender address → `client_contacts`
+2. A **matching rule** (`match_rules`) — user-authored, see below
+3. Exact sender domain → `client_domains`
+4. Subdomain of a client domain
+5. Any other external participant on the thread
+6. Otherwise: Unmatched
+
+**Matching rules** (Settings → Matching rules) are the general escape hatch.
+A rule tests one field (sender address, sender domain, subject, body,
+recipient, or a raw header) with regex / contains / equals / ends-with, and
+then assigns a client, filters the mail out, forces it through the filters, or
+sets a priority. They run before the built-in filters and before client
+matching, in `priority` order, and `allow` always beats `ignore`.
+
+Two things make them safe to use: a rule is **previewed against real stored
+mail** before saving, showing exactly what it would catch and warning if it
+would hide a matched client's mail; and **Apply to existing mail** re-runs the
+rules over the backlog rather than only affecting future messages.
+
+Unmatched senders also get **name-based suggestions** (`norbot.ca` → the client
+`Norbot`), offered as one click, never applied automatically.
+
+---
+
+## 8. What is left for a human
 
 **Needs your access or decision**
 
@@ -246,7 +294,7 @@ Per CLAUDE.md, with no further input required:
 
 ---
 
-## 8. Internal database safety
+## 9. Internal database safety
 
 Two databases, deliberately asymmetric:
 
