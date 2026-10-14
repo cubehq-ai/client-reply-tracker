@@ -145,14 +145,16 @@ export async function ingestMessage(raw: RawMessage, mailbox: string, ctx: OrgCo
       `INSERT INTO items (conversation_id, source, state, reason, client_id, owner_user_id, watchers,
                           needs_reply_confidence, summary, filter_reason, last_external_at,
                           low_confidence, unmatched_client)
-       VALUES ($1,'gmail',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       VALUES ($1,'gmail',$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($11, false),$12)
        ON CONFLICT (conversation_id) DO UPDATE SET
          client_id      = COALESCE(items.client_id, EXCLUDED.client_id),
          owner_user_id  = COALESCE(items.owner_user_id, EXCLUDED.owner_user_id),
          watchers       = ARRAY(SELECT DISTINCT unnest(items.watchers || EXCLUDED.watchers)),
          needs_reply_confidence = COALESCE(EXCLUDED.needs_reply_confidence, items.needs_reply_confidence),
          summary        = COALESCE(EXCLUDED.summary, items.summary),
-         low_confidence = COALESCE(EXCLUDED.low_confidence, items.low_confidence),
+         -- $11, not EXCLUDED: the VALUES clause already defaulted null to
+         -- false, so EXCLUDED can never carry "no new verdict".
+         low_confidence = COALESCE($11, items.low_confidence),
          unmatched_client = EXCLUDED.unmatched_client,
          updated_at     = now()
        RETURNING id`,

@@ -187,3 +187,28 @@ async function gmailIdFor(rfcId: string, mailbox: string): Promise<string | null
   );
   return rows[0]?.gmail_message_id ?? null;
 }
+
+describe('low confidence flag', () => {
+  it('survives re-ingesting the same message', async () => {
+    await syncAllMailboxes();
+    const before = await query<{ id: string; low_confidence: boolean; needs_reply_confidence: number }>(
+      'SELECT id, low_confidence, needs_reply_confidence FROM items WHERE needs_reply_confidence IS NOT NULL ORDER BY id',
+    );
+    // A second pass re-ingests every message as a duplicate.
+    await syncAllMailboxes();
+    const after = await query<{ id: string; low_confidence: boolean }>(
+      'SELECT id, low_confidence FROM items WHERE needs_reply_confidence IS NOT NULL ORDER BY id',
+    );
+    expect(after.map((r) => r.low_confidence)).toEqual(before.map((r) => r.low_confidence));
+  });
+
+  it('agrees with the stored confidence', async () => {
+    await syncAllMailboxes();
+    const inconsistent = await query<{ n: string }>(
+      `SELECT count(*)::int AS n FROM items
+        WHERE needs_reply_confidence IS NOT NULL
+          AND low_confidence <> (needs_reply_confidence < 0.6)`,
+    );
+    expect(Number(inconsistent[0]!.n)).toBe(0);
+  });
+});
