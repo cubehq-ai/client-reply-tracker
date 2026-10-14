@@ -18,43 +18,43 @@ beforeEach(async () => {
 
 describe('multi-select filters', () => {
   it('an empty list means no restriction', async () => {
-    const all = await listQueue(admin, 'inbox', {});
-    const empty = await listQueue(admin, 'inbox', { priorities: [], clientIds: [], ages: [] });
+    const all = await listQueue(admin, 'needs_reply', {});
+    const empty = await listQueue(admin, 'needs_reply', { reasons: [], clientIds: [], ages: [] });
     expect(empty.total).toBe(all.total);
   });
 
-  it('several priorities OR together rather than narrowing', async () => {
-    const high = await listQueue(admin, 'inbox', { priorities: ['high'] });
-    const normal = await listQueue(admin, 'inbox', { priorities: ['normal'] });
-    const both = await listQueue(admin, 'inbox', { priorities: ['high', 'normal'] });
-    expect(both.total).toBe(high.total + normal.total);
+  it('several reasons OR together rather than narrowing', async () => {
+    const replied = await listQueue(admin, 'no_reply_needed', { reasons: ['replied'] });
+    const filtered = await listQueue(admin, 'no_reply_needed', { reasons: ['filtered'] });
+    const both = await listQueue(admin, 'no_reply_needed', { reasons: ['replied', 'filtered'] });
+    expect(both.total).toBe(replied.total + filtered.total);
   });
 
   it('several clients OR together', async () => {
     const clients = await query<{ id: string }>('SELECT id FROM clients ORDER BY id LIMIT 2');
     if (clients.length < 2) return;
-    const a = await listQueue(admin, 'inbox', { clientIds: [Number(clients[0]!.id)] });
-    const b = await listQueue(admin, 'inbox', { clientIds: [Number(clients[1]!.id)] });
-    const both = await listQueue(admin, 'inbox', { clientIds: [Number(clients[0]!.id), Number(clients[1]!.id)] });
+    const a = await listQueue(admin, 'needs_reply', { clientIds: [Number(clients[0]!.id)] });
+    const b = await listQueue(admin, 'needs_reply', { clientIds: [Number(clients[1]!.id)] });
+    const both = await listQueue(admin, 'needs_reply', { clientIds: [Number(clients[0]!.id), Number(clients[1]!.id)] });
     expect(both.total).toBe(a.total + b.total);
   });
 
   it('age buckets OR together and partition the set', async () => {
     const buckets = ['4h', '24h', '3d', 'older'] as const;
-    const parts = await Promise.all(buckets.map((b) => listQueue(admin, 'inbox', { ages: [b] })));
-    const all = await listQueue(admin, 'inbox', { ages: [...buckets] });
+    const parts = await Promise.all(buckets.map((b) => listQueue(admin, 'needs_reply', { ages: [b] })));
+    const all = await listQueue(admin, 'needs_reply', { ages: [...buckets] });
     expect(all.total).toBe(parts.reduce((n, p) => n + p.total, 0));
   });
 
   it('different filters still AND with each other', async () => {
-    const byPriority = await listQueue(admin, 'inbox', { priorities: ['high', 'normal', 'low'] });
-    const narrowed = await listQueue(admin, 'inbox', { priorities: ['high', 'normal', 'low'], status: ['needs_reply'] });
-    expect(narrowed.total).toBeLessThanOrEqual(byPriority.total);
+    const all = await listQueue(admin, 'needs_reply', {});
+    const narrowed = await listQueue(admin, 'needs_reply', { unmatched: true });
+    expect(narrowed.total).toBeLessThanOrEqual(all.total);
   });
 
-  it('selecting every option matches selecting none', async () => {
-    const none = await listQueue(admin, 'inbox', {});
-    const all = await listQueue(admin, 'inbox', { priorities: ['high', 'normal', 'low'] });
-    expect(all.total).toBe(none.total);
+  it('selecting every reason matches selecting none', async () => {
+    const none = await listQueue(admin, 'no_reply_needed', {});
+    const every = await listQueue(admin, 'no_reply_needed', { reasons: ['replied', 'not_needed', 'filtered', 'ignored'] });
+    expect(every.total).toBe(none.total);
   });
 });

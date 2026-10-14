@@ -2,9 +2,10 @@ import type { PoolClient } from 'pg';
 import { config } from '../lib/config.js';
 import { addBusinessHours } from './sla.js';
 
-export type ItemState =
-  | 'needs_reply' | 'sending' | 'replied' | 'ignored' | 'snoozed'
-  | 'fyi' | 'auto_ignored' | 'handled_elsewhere' | 'archived';
+/** Two states only (CLAUDE.md override 1). Why it is closed lives in `reason`. */
+export type ItemState = 'needs_reply' | 'no_reply_needed';
+
+export type ItemReason = 'replied' | 'not_needed' | 'filtered' | 'ignored';
 
 interface MessageRow {
   id: string;
@@ -22,12 +23,11 @@ interface MessageRow {
 interface ItemRow {
   id: string;
   state: ItemState;
+  reason: ItemReason | null;
   muted: boolean;
-  snoozed_until: Date | null;
   state_since: Date;
   acted_on_external_at: Date | null;
   reopen_count: number;
-  sending_since: Date | null;
 }
 
 export interface RecomputeOptions {
@@ -38,6 +38,7 @@ export interface RecomputeOptions {
 
 export interface RecomputeResult {
   state: ItemState;
+  reason: ItemReason | null;
   changed: boolean;
   event: string;
   previous: ItemState | null;
@@ -77,7 +78,7 @@ export async function recomputeItemState(
   const now = opts.now ?? new Date();
 
   const itemRes = await c.query<ItemRow>(
-    `SELECT id, state, muted, snoozed_until, state_since, acted_on_external_at, reopen_count, sending_since
+    `SELECT id, state, reason, muted, state_since, acted_on_external_at, reopen_count
        FROM items WHERE conversation_id = $1`,
     [conversationId],
   );
@@ -102,10 +103,9 @@ export async function recomputeItemState(
   const lastReply = latestInternalReply(messages, externalParticipants);
 
   const previous = item.state;
-  let next: ItemState = previous;
-  let event = 'recompute';
+  const previousReason = item.reason;
 
-  // Every copy gone from every mailbox: soft delete (SPEC 5).
+  // Every copy gone from every mailbox: close it as filtered (SPEC 5).
   const liveCopies = await c.query<{ n: string }>(
     `SELECT count(*) AS n FROM message_copies mc
        JOIN messages m ON m.id = mc.message_id
@@ -113,118 +113,70 @@ export async function recomputeItemState(
     [conversationId],
   );
   if (Number(liveCopies.rows[0]?.n ?? 0) === 0 && messages.length > 0) {
-    return applyState(c, item, 'archived', 'deleted_everywhere', now, previous);
+    return applyState(c, item, 'no_reply_needed', 'filtered', 'deleted_everywhere', now, previous);
   }
 
   if (!lastExternal) {
     // Nothing meaningful from outside: filtered or internal-only.
-    next = previous === 'auto_ignored' || previous === 'archived' ? previous : 'auto_ignored';
-    return applyState(c, item, next, 'no_meaningful_external', now, previous);
+    return applyState(c, item, 'no_reply_needed', 'filtered', 'no_meaningful_external', now, previous);
   }
 
   const repliedAfterExternal = lastReply !== null && lastReply.internal_date > lastExternal.internal_date;
-  // Compare against the external message the user dismissed, when we have it.
-  // Falling back to state_since mixes two clocks and loses same-millisecond
-  // arrivals, so it is only a last resort for rows predating the column.
+
+  // An internal reply closes the item, whatever it was before.
+  if (repliedAfterExternal) {
+    return applyState(c, item, 'no_reply_needed', 'replied', 'reply_detected', now, previous, { lastReply, lastExternal });
+  }
+
+  // From here the newest meaningful message is external and unanswered.
   const externalAfterUserAction =
     item.acted_on_external_at !== null
       ? lastExternal.internal_date > item.acted_on_external_at
       : lastExternal.internal_date > item.state_since;
 
-  if (repliedAfterExternal) {
-    next = 'replied';
-    event = previous === 'replied' ? 'recompute' : 'reply_detected';
-    return applyState(c, item, next, event, now, previous, { lastReply, lastExternal });
+  // A muted thread never reopens, however much they write.
+  if (item.muted) {
+    return applyState(c, item, 'no_reply_needed', previousReason ?? 'ignored', 'muted', now, previous);
   }
 
-  // From here on, the newest meaningful message is external and unanswered.
-  switch (previous) {
-    case 'ignored':
-      if (item.muted) return applyState(c, item, 'ignored', 'muted', now, previous);
-      next = externalAfterUserAction ? 'needs_reply' : 'ignored';
-      event = externalAfterUserAction ? 'reopened_after_ignore' : 'recompute';
-      break;
+  // The classifier decided this specific message needs nothing.
+  if (opts.newestExternalNeedsReply === false) {
+    return applyState(c, item, 'no_reply_needed', 'not_needed', 'classified_not_needed', now, previous, { lastExternal });
+  }
 
-    case 'snoozed':
-      if (externalAfterUserAction) {
-        next = 'needs_reply';
-        event = 'snooze_early_wake';
-      } else if (item.snoozed_until && item.snoozed_until <= now) {
-        next = 'needs_reply';
-        event = 'snooze_expired';
-      } else {
-        next = 'snoozed';
-      }
-      break;
-
-    case 'handled_elsewhere':
-      next = externalAfterUserAction ? 'needs_reply' : 'handled_elsewhere';
-      event = externalAfterUserAction ? 'reopened_after_handled' : 'recompute';
-      break;
-
-    case 'replied':
-      // We only reach here when the newest meaningful message is external and
-      // unanswered, so if a qualifying reply exists at all it is older than
-      // that message: the client has written again. Comparing against
-      // state_since would be wrong, because during backfill state_since is
-      // wall-clock while the messages are historical.
-      if (opts.newestExternalNeedsReply === false) {
-        // "Thanks!" after our reply goes to FYI rather than reopening
-        // (SPEC 12; decision 4).
-        next = 'fyi';
-        event = 'fyi_after_reply';
-      } else {
-        next = 'needs_reply';
-        event = 'reopened';
-        if (lastReply) await c.query('UPDATE items SET reopen_count = reopen_count + 1 WHERE id = $1', [item.id]);
-      }
-      break;
-
-    case 'fyi':
-      next = opts.newestExternalNeedsReply === true ? 'needs_reply' : 'fyi';
-      event = next === 'needs_reply' ? 'fyi_upgraded' : 'recompute';
-      break;
-
-    case 'sending': {
-      // Not confirmed in sync within 5 minutes: fail back (SPEC 5).
-      const stale = item.sending_since !== null && now.getTime() - item.sending_since.getTime() > 5 * 60_000;
-      next = stale ? 'needs_reply' : 'sending';
-      event = stale ? 'send_unconfirmed' : 'recompute';
-      break;
+  // A closed item reopens when the client writes again after it was closed.
+  if (previous === 'no_reply_needed') {
+    const reopen = opts.newestExternalNeedsReply === true || previousReason === 'replied';
+    if (!reopen || (previousReason === 'ignored' && !externalAfterUserAction)) {
+      return applyState(c, item, 'no_reply_needed', previousReason ?? 'not_needed', 'recompute', now, previous, { lastExternal });
     }
-
-    case 'auto_ignored':
-      next = 'auto_ignored';
-      break;
-
-    case 'archived':
-      next = 'archived';
-      break;
-
-    default:
-      next = opts.newestExternalNeedsReply === false ? 'fyi' : 'needs_reply';
-      break;
+    if (previousReason === 'replied' || externalAfterUserAction) {
+      await c.query('UPDATE items SET reopen_count = reopen_count + 1 WHERE id = $1', [item.id]);
+    }
+    return applyState(c, item, 'needs_reply', null, 'reopened', now, previous, { lastExternal });
   }
 
-  return applyState(c, item, next, event, now, previous, { lastExternal, lastReply });
+  return applyState(c, item, 'needs_reply', null, 'recompute', now, previous, { lastExternal, lastReply });
 }
 
 async function applyState(
   c: PoolClient,
   item: ItemRow,
   next: ItemState,
+  reason: ItemReason | null,
   event: string,
   now: Date,
   previous: ItemState,
   ctx: { lastExternal?: MessageRow | null; lastReply?: MessageRow | null } = {},
 ): Promise<RecomputeResult> {
-  const changed = next !== previous;
+  const changed = next !== previous || reason !== item.reason;
 
   const lastExternalAt = ctx.lastExternal?.internal_date ?? null;
-  const repliedAt = next === 'replied' ? (ctx.lastReply?.internal_date ?? null) : null;
-  const repliedBy = next === 'replied' ? (ctx.lastReply?.from_email ?? null) : null;
+  const isReplied = reason === 'replied';
+  const repliedAt = isReplied ? (ctx.lastReply?.internal_date ?? null) : null;
+  const repliedBy = isReplied ? (ctx.lastReply?.from_email ?? null) : null;
   const responseSeconds =
-    next === 'replied' && ctx.lastReply && ctx.lastExternal
+    isReplied && ctx.lastReply && ctx.lastExternal
       ? Math.max(0, Math.round((ctx.lastReply.internal_date.getTime() - ctx.lastExternal.internal_date.getTime()) / 1000))
       : null;
 
@@ -234,6 +186,7 @@ async function applyState(
   await c.query(
     `UPDATE items SET
        state = $2,
+       reason = $10,
        state_since = CASE WHEN state <> $2 THEN $3 ELSE state_since END,
        last_external_at = COALESCE($4, last_external_at),
        last_external_message_id = COALESCE($5, last_external_message_id),
@@ -241,21 +194,19 @@ async function applyState(
        replied_by = $7,
        response_time_seconds = $8,
        sla_due_at = $9,
-       snoozed_until = CASE WHEN $2 <> 'snoozed' THEN NULL ELSE snoozed_until END,
-       sending_since = CASE WHEN $2 <> 'sending' THEN NULL ELSE sending_since END,
        updated_at = now()
      WHERE id = $1`,
-    [item.id, next, now, lastExternalAt, ctx.lastExternal?.rfc_message_id ?? null, repliedAt, repliedBy, responseSeconds, slaDueAt],
+    [item.id, next, now, lastExternalAt, ctx.lastExternal?.rfc_message_id ?? null, repliedAt, repliedBy, responseSeconds, slaDueAt, reason],
   );
 
   if (changed) {
     await c.query(
       'INSERT INTO item_events (item_id, from_state, to_state, event, actor, detail) VALUES ($1,$2,$3,$4,$5,$6)',
-      [item.id, previous, next, event, 'system', JSON.stringify({})],
+      [item.id, previous, next, event, 'system', JSON.stringify({ reason })],
     );
   }
 
-  return { state: next, changed, event, previous };
+  return { state: next, reason, changed, event, previous };
 }
 
 /** Per-client tier SLA if configured, otherwise the org default (SPEC 8). */

@@ -3,21 +3,22 @@ export interface User { id: number; email: string; name: string | null; role: 'm
 export interface QueueItem {
   id: number; conversationId: number; state: string; subject: string;
   clientId: number | null; clientName: string | null; ownerEmail: string | null;
-  priority: string; intent: string | null; summary: string | null;
+  summary: string | null; reason: string | null;
   confidence: number | null; lowConfidence: boolean;
   lastExternalAt: string | null; slaDueAt: string | null; overdue: boolean;
-  snoozedUntil: string | null; repliedAt: string | null; repliedBy: string | null;
+  repliedAt: string | null; repliedBy: string | null;
   reopenCount: number; muted: boolean; filterReason: string | null;
-  awaitingClient: boolean; fromEmail: string | null; snippet: string | null;
+  fromEmail: string | null; snippet: string | null;
   mailboxes: string[]; teamName: string | null; lockedBy: string | null;
 }
 
 export interface InboxFacets {
-  status: Record<string, number>;
+  needsReply: number;
+  noReplyNeeded: number;
+  reasons: Record<string, number>;
   overdue: number;
   unmatched: number;
   lowConfidence: number;
-  awaitingClient: number;
   notReplied: number;
   fresh: number;
   thresholdHours: number;

@@ -10,17 +10,23 @@ afterAll(async () => { await teardown(); });
 beforeEach(async () => { await freshHarness(); });
 
 describe('tier A heuristics', () => {
-  it('calls a bare acknowledgement FYI without paying for a model', () => {
-    expect(heuristicClassify({ subject: 'Re: x', body: 'Thanks!' })).toMatchObject({ needsReply: false, tier: 'heuristic' });
+  it('closes a bare acknowledgement without paying for a model', () => {
+    expect(heuristicClassify({ subject: 'Re: x', body: 'Thanks!' })).toMatchObject({ needsReply: false, confidence: 0.9, tier: 'heuristic' });
     expect(heuristicClassify({ subject: 'Re: x', body: 'Got it, thank you' })?.needsReply).toBe(false);
+  });
+
+  it('refuses when the message still asks for something', () => {
+    expect(heuristicClassify({ subject: 'Re: x', body: 'Thanks, please send the invoice' })).toBeNull();
+    expect(heuristicClassify({ subject: 'Re: x', body: 'Got it. Can you confirm the date' })).toBeNull();
+    expect(heuristicClassify({ subject: 'Re: x', body: 'Noted, when will it ship' })).toBeNull();
   });
 
   it('refuses to decide when there is a question', () => {
     expect(heuristicClassify({ subject: 'Re: x', body: 'Thanks! Can you also send the invoice?' })).toBeNull();
   });
 
-  it('refuses to decide on anything long', () => {
-    expect(heuristicClassify({ subject: 'Re: x', body: 'Thanks. '.repeat(30) })).toBeNull();
+  it('refuses to decide on anything 200 characters or longer', () => {
+    expect(heuristicClassify({ subject: 'Re: x', body: `Thanks. ${'x'.repeat(200)}` })).toBeNull();
   });
 });
 
@@ -55,9 +61,9 @@ describe('local model', () => {
         ? 'Could you please confirm the delivery schedule? We are blocked and need an answer.'
         : 'Thanks for sorting that out, nothing further needed from your side.';
       const itemRes = await query<{ id: string }>(
-        `INSERT INTO items (conversation_id, state, replied_at, ignore_reason)
-         VALUES ($1, $2, $3, $4) ON CONFLICT (conversation_id) DO NOTHING RETURNING id`,
-        [conversationId, needs ? 'replied' : 'ignored', needs ? new Date() : null, needs ? null : 'not_needed'],
+        `INSERT INTO items (conversation_id, state, reason, replied_at)
+         VALUES ($1, 'no_reply_needed', $2, $3) ON CONFLICT (conversation_id) DO NOTHING RETURNING id`,
+        [conversationId, needs ? 'replied' : 'not_needed', needs ? new Date() : null],
       );
       void itemRes;
       await query(
@@ -87,9 +93,9 @@ describe('local model', () => {
           : 'Thanks for sorting that out, nothing further needed from your side.'],
       );
       await query(
-        `INSERT INTO items (conversation_id, state, replied_at, ignore_reason)
-         VALUES ($1,$2,$3,$4)`,
-        [cid, needs ? 'replied' : 'ignored', needs ? new Date() : null, needs ? null : 'not_needed'],
+        `INSERT INTO items (conversation_id, state, reason, replied_at)
+         VALUES ($1, 'no_reply_needed', $2, $3)`,
+        [cid, needs ? 'replied' : 'not_needed', needs ? new Date() : null],
       );
     }
 

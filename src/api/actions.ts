@@ -76,64 +76,34 @@ export async function ignoreItem(
   const muted = scope !== 'message';
 
   await query(
-    `UPDATE items SET state = 'ignored', ignore_reason = $2, muted = $3,
-                      state_since = now(), acted_on_external_at = last_external_at,
-                      snoozed_until = NULL, updated_at = now()
+    `UPDATE items SET state = 'no_reply_needed', reason = 'ignored', ignore_reason = $2, muted = $3,
+                      state_since = now(), acted_on_external_at = last_external_at, updated_at = now()
       WHERE id = $1`,
     [itemId, reason, muted],
   );
-  await recordEvent(itemId, item.state, 'ignored', `ignored:${scope}`, user.email, { reason, scope });
+  await recordEvent(itemId, item.state, 'no_reply_needed', `ignored:${scope}`, user.email, { reason, scope });
   await audit(user, 'ignore', itemId, { reason, scope, ruleCreated });
 
-  return { state: 'ignored', ruleCreated };
+  return { state: 'no_reply_needed', ruleCreated };
 }
 
 /** Undo within the 30-day window (SPEC 5). */
 export async function undoIgnore(user: SessionUser, itemId: number): Promise<{ state: string }> {
   const item = await loadItem(itemId);
-  if (item.state !== 'ignored') throw new HttpError(409, 'item is not ignored');
+  if (item.reason !== 'ignored') throw new HttpError(409, 'item is not ignored');
 
   await query(
-    `UPDATE items SET state = 'needs_reply', ignore_reason = NULL, muted = false,
+    `UPDATE items SET state = 'needs_reply', reason = NULL, ignore_reason = NULL, muted = false,
                       state_since = now(), acted_on_external_at = NULL, updated_at = now()
       WHERE id = $1`,
     [itemId],
   );
   // Recompute so a reply that landed meanwhile is still honoured.
   await tx((c) => recomputeItemState(c, Number(item.conversation_id)));
-  await recordEvent(itemId, 'ignored', 'needs_reply', 'undo_ignore', user.email);
+  await recordEvent(itemId, 'no_reply_needed', 'needs_reply', 'undo_ignore', user.email);
   await audit(user, 'undo_ignore', itemId, {});
   const after = await loadItem(itemId);
   return { state: after.state };
-}
-
-export async function snoozeItem(user: SessionUser, itemId: number, until: Date): Promise<{ state: string; until: string }> {
-  const item = await loadItem(itemId);
-  if (Number.isNaN(until.getTime()) || until.getTime() <= Date.now()) {
-    throw new HttpError(400, 'snooze time must be in the future');
-  }
-  await query(
-    `UPDATE items SET state = 'snoozed', snoozed_until = $2, state_since = now(),
-                      acted_on_external_at = last_external_at, updated_at = now()
-      WHERE id = $1`,
-    [itemId, until],
-  );
-  await recordEvent(itemId, item.state, 'snoozed', 'snoozed', user.email, { until: until.toISOString() });
-  await audit(user, 'snooze', itemId, { until: until.toISOString() });
-  return { state: 'snoozed', until: until.toISOString() };
-}
-
-export async function handledElsewhere(user: SessionUser, itemId: number, note?: string): Promise<{ state: string }> {
-  const item = await loadItem(itemId);
-  await query(
-    `UPDATE items SET state = 'handled_elsewhere', state_since = now(),
-                      acted_on_external_at = last_external_at, updated_at = now()
-      WHERE id = $1`,
-    [itemId],
-  );
-  await recordEvent(itemId, item.state, 'handled_elsewhere', 'handled_elsewhere', user.email, { note });
-  await audit(user, 'handled_elsewhere', itemId, { note });
-  return { state: 'handled_elsewhere' };
 }
 
 export async function reassignItem(user: SessionUser, itemId: number, ownerEmail: string): Promise<{ ownerEmail: string }> {
@@ -153,23 +123,42 @@ export async function reassignItem(user: SessionUser, itemId: number, ownerEmail
   return { ownerEmail: ownerEmail.toLowerCase() };
 }
 
-/** "Actually needs reply" from the FYI queue; the disagreement trains the classifier. */
+/** "Needs reply" on a closed item. The disagreement trains the classifier. */
 export async function markNeedsReply(user: SessionUser, itemId: number): Promise<{ state: string }> {
   const item = await loadItem(itemId);
   await query(
-    `UPDATE items SET state = 'needs_reply', state_since = now(), acted_on_external_at = NULL,
-                      restored_from_filter = CASE WHEN state = 'auto_ignored' THEN true ELSE restored_from_filter END,
+    `UPDATE items SET state = 'needs_reply', reason = NULL, muted = false,
+                      state_since = now(), acted_on_external_at = NULL,
+                      restored_from_filter = CASE WHEN reason = 'filtered' THEN true ELSE restored_from_filter END,
                       updated_at = now()
       WHERE id = $1`,
     [itemId],
   );
   await query(
     'INSERT INTO classifier_feedback (item_id, predicted, actual, confidence, user_email) VALUES ($1,$2,$3,$4,$5)',
-    [itemId, item.state, 'needs_reply', item.needs_reply_confidence, user.email],
+    [itemId, item.reason ?? item.state, 'needs_reply', item.needs_reply_confidence, user.email],
   );
-  await recordEvent(itemId, item.state, 'needs_reply', 'user_marked_needs_reply', user.email);
-  await audit(user, 'mark_needs_reply', itemId, { from: item.state });
+  await recordEvent(itemId, item.state, 'needs_reply', 'user_marked_needs_reply', user.email, { from: item.reason });
+  await audit(user, 'mark_needs_reply', itemId, { from: item.reason });
   return { state: 'needs_reply' };
+}
+
+/** "No reply needed" on an open item. Also logged as classifier feedback. */
+export async function markNoReplyNeeded(user: SessionUser, itemId: number): Promise<{ state: string }> {
+  const item = await loadItem(itemId);
+  await query(
+    `UPDATE items SET state = 'no_reply_needed', reason = 'not_needed',
+                      state_since = now(), acted_on_external_at = last_external_at, updated_at = now()
+      WHERE id = $1`,
+    [itemId],
+  );
+  await query(
+    'INSERT INTO classifier_feedback (item_id, predicted, actual, confidence, user_email) VALUES ($1,$2,$3,$4,$5)',
+    [itemId, 'needs_reply', 'not_needed', item.needs_reply_confidence, user.email],
+  );
+  await recordEvent(itemId, item.state, 'no_reply_needed', 'user_marked_not_needed', user.email);
+  await audit(user, 'mark_no_reply_needed', itemId, {});
+  return { state: 'no_reply_needed' };
 }
 
 /** Links an unmatched sender to a client, retroactively (SPEC 4 step 4). */
@@ -208,16 +197,6 @@ export async function linkToClient(
   await audit(user, 'link_to_client', itemId, { clientId, mode, value: mode === 'domain' ? sender.from_domain : sender.from_email });
   logger.info({ itemId, clientId, mode, rematched }, 'linked sender to client');
   return { linked: mode === 'domain' ? sender.from_domain : sender.from_email, rematched };
-}
-
-export async function setAwaitingClient(user: SessionUser, itemId: number, awaiting: boolean): Promise<{ awaitingClient: boolean }> {
-  await loadItem(itemId);
-  await query(
-    `UPDATE items SET awaiting_client = $2, awaiting_since = CASE WHEN $2 THEN now() ELSE NULL END, updated_at = now() WHERE id = $1`,
-    [itemId, awaiting],
-  );
-  await audit(user, 'set_awaiting_client', itemId, { awaiting });
-  return { awaitingClient: awaiting };
 }
 
 /** Soft composer lock so two people do not draft the same reply (SPEC 9). */

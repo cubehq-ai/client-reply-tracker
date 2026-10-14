@@ -18,8 +18,8 @@ import { computeMetrics } from './metrics.js';
 import { modelStatus, trainLocalClassifier } from '../llm/localClassifier.js';
 import { sendDailyDigests } from '../sync/digest.js';
 import {
-  acquireLock, handledElsewhere, ignoreItem, linkToClient, markNeedsReply,
-  reassignItem, releaseLock, setAwaitingClient, snoozeItem, undoIgnore,
+  acquireLock, ignoreItem, linkToClient, markNeedsReply, markNoReplyNeeded,
+  reassignItem, releaseLock, undoIgnore,
   type IgnoreReason, type IgnoreScope,
 } from './actions.js';
 import {
@@ -129,7 +129,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       teamIds: ids(q.teamIds ?? q.teamId),
       mailbox: q.mailbox,
       ages: strs(q.ages ?? q.age),
-      priorities: strs(q.priorities ?? q.priority),
+      reasons: strs(q.reasons),
       intent: q.intent,
       view: (q.view as QueueFilters['view']) ?? 'all',
       search: q.search,
@@ -139,7 +139,6 @@ export async function buildServer(): Promise<FastifyInstance> {
       overdue: q.overdue === 'true',
       unmatched: q.unmatched === 'true',
       lowConfidence: q.lowConfidence === 'true',
-      awaitingClient: q.awaitingClient === 'true',
       muted: q.muted === 'true',
       limit: q.limit ? Number(q.limit) : undefined,
       offset: q.offset ? Number(q.offset) : undefined,
@@ -152,13 +151,15 @@ export async function buildServer(): Promise<FastifyInstance> {
     return listQueue(user, name, parseFilters(req.query as Record<string, string>));
   });
 
-  // The unified inbox: one list, everything else is a filter.
+  // Two tabs: needs_reply and no_reply_needed. Everything else is a filter.
   app.get('/api/inbox', async (req) => {
     const user = await requireUser(req);
-    const filters = parseFilters(req.query as Record<string, string>);
+    const q = req.query as Record<string, string>;
+    const filters = parseFilters(q);
+    const tab = (q.tab === 'no_reply_needed' ? 'no_reply_needed' : 'needs_reply') as QueueName;
     const [list, facets] = await Promise.all([
-      listQueue(user, 'inbox', filters),
-      inboxFacets(user, filters),
+      listQueue(user, tab, filters),
+      inboxFacets(user, filters, tab),
     ]);
     return { ...list, facets };
   });
@@ -224,36 +225,13 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.post('/api/items/:id/undo-ignore', async (req) => undoIgnore(await requireUser(req), itemId(req)));
 
-  app.post('/api/items/:id/snooze', async (req) => {
-    const user = await requireUser(req);
-    const body = z.object({ until: z.string() }).parse(req.body);
-    return snoozeItem(user, itemId(req), new Date(body.until));
-  });
-
-  app.post('/api/items/:id/handled', async (req) => {
-    const user = await requireUser(req);
-    const body = z.object({ note: z.string().optional() }).parse(req.body ?? {});
-    return handledElsewhere(user, itemId(req), body.note);
-  });
-
-  app.post('/api/items/:id/reassign', async (req) => {
-    const user = await requireUser(req);
-    const body = z.object({ ownerEmail: z.string().email() }).parse(req.body);
-    return reassignItem(user, itemId(req), body.ownerEmail);
-  });
-
   app.post('/api/items/:id/needs-reply', async (req) => markNeedsReply(await requireUser(req), itemId(req)));
+  app.post('/api/items/:id/no-reply-needed', async (req) => markNoReplyNeeded(await requireUser(req), itemId(req)));
 
   app.post('/api/items/:id/link-client', async (req) => {
     const user = await requireUser(req);
     const body = z.object({ clientId: z.number(), mode: z.enum(['email', 'domain']) }).parse(req.body);
     return linkToClient(user, itemId(req), body.clientId, body.mode);
-  });
-
-  app.post('/api/items/:id/awaiting', async (req) => {
-    const user = await requireUser(req);
-    const body = z.object({ awaiting: z.boolean() }).parse(req.body);
-    return setAwaitingClient(user, itemId(req), body.awaiting);
   });
 
   app.post('/api/items/:id/lock', async (req) => acquireLock(await requireUser(req), itemId(req)));

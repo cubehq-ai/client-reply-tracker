@@ -164,9 +164,10 @@ export async function rematchUnmatchedItems(): Promise<number> {
                 ORDER BY m.internal_date DESC LIMIT 1) AS by_email
          FROM items i
         WHERE i.client_id IS NULL
-          AND i.state IN ('needs_reply','fyi','snoozed','handled_elsewhere','ignored')
+          AND (i.state = 'needs_reply' OR i.reason IN ('not_needed','filtered'))
      )
-     UPDATE items SET client_id = COALESCE(candidate.by_email, candidate.by_domain), updated_at = now()
+     UPDATE items SET client_id = COALESCE(candidate.by_email, candidate.by_domain),
+                      unmatched_client = false, updated_at = now()
        FROM candidate
       WHERE items.id = candidate.id
         AND COALESCE(candidate.by_email, candidate.by_domain) IS NOT NULL

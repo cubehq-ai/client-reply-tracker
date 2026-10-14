@@ -51,9 +51,8 @@ export async function trainLocalClassifier(): Promise<{ trained: boolean; exampl
   const rows = await query<{ label: string; subject: string; body: string }>(
     `SELECT
         CASE
-          WHEN i.state IN ('replied','needs_reply') AND i.replied_at IS NOT NULL THEN 'needs_reply'
-          WHEN i.state = 'ignored' AND i.ignore_reason = 'not_needed' THEN 'fyi'
-          WHEN i.state = 'fyi' THEN 'fyi'
+          WHEN i.reason = 'replied' THEN 'needs_reply'
+          WHEN i.reason IN ('not_needed','ignored') THEN 'fyi'
           ELSE NULL
         END AS label,
         COALESCE(c.subject, '') AS subject,
@@ -65,7 +64,7 @@ export async function trainLocalClassifier(): Promise<{ trained: boolean; exampl
           WHERE conversation_id = i.conversation_id AND direction = 'in'
           ORDER BY internal_date DESC LIMIT 1
        ) m ON true
-      WHERE i.state IN ('replied','ignored','fyi','needs_reply')`,
+      WHERE i.reason IN ('replied','not_needed','ignored')`,
   );
 
   const usable = rows.filter((r) => r.label !== null && (r.body || r.subject));
@@ -157,8 +156,6 @@ export async function localClassify(input: ClassificationInput): Promise<Classif
   return {
     needsReply,
     confidence,
-    intent: needsReply ? 'question' : 'fyi',
-    priority: 'normal',
     summary: (input.subject || input.body).slice(0, 120),
     tier: 'heuristic',
     model: 'local-nb-v1',

@@ -17,7 +17,7 @@ export async function computeMetrics(): Promise<Metrics> {
                   count(*) FILTER (WHERE i.state = 'needs_reply')::int AS open_count,
                   MIN(i.last_external_at) FILTER (WHERE i.state = 'needs_reply') AS oldest_open
              FROM items i LEFT JOIN users u ON u.id = i.owner_user_id
-            WHERE i.state <> 'archived'
+            WHERE TRUE
             GROUP BY u.email ORDER BY open_count DESC`),
 
     query(`SELECT COALESCE(cl.name,'(unmatched)') AS client,
@@ -25,7 +25,7 @@ export async function computeMetrics(): Promise<Metrics> {
                   count(*) FILTER (WHERE i.state = 'needs_reply' AND i.sla_due_at < now())::int AS overdue_count,
                   MIN(i.last_external_at) FILTER (WHERE i.state = 'needs_reply') AS oldest_open
              FROM items i LEFT JOIN clients cl ON cl.id = i.client_id
-            WHERE i.state <> 'archived'
+            WHERE TRUE
             GROUP BY cl.name ORDER BY open_count DESC`),
 
     query(`SELECT COALESCE(cl.name,'(unmatched)') AS client,
@@ -41,19 +41,19 @@ export async function computeMetrics(): Promise<Metrics> {
 
     query<{ reopened: string; total: string }>(
       `SELECT count(*) FILTER (WHERE reopen_count > 0)::int AS reopened, count(*)::int AS total
-         FROM items WHERE state <> 'archived'`,
+         FROM items`,
     ),
 
     query<{ fyi_upgraded: string; total_fyi: string; nr_ignored: string; total_nr: string }>(
       `SELECT
-         (SELECT count(*)::int FROM classifier_feedback WHERE predicted = 'fyi' AND actual = 'needs_reply') AS fyi_upgraded,
-         (SELECT count(*)::int FROM items WHERE state = 'fyi' OR id IN (SELECT item_id FROM classifier_feedback WHERE predicted = 'fyi')) AS total_fyi,
-         (SELECT count(*)::int FROM items WHERE state = 'ignored' AND intent IS NOT NULL) AS nr_ignored,
-         (SELECT count(*)::int FROM items WHERE intent IS NOT NULL) AS total_nr`,
+         (SELECT count(*)::int FROM classifier_feedback WHERE predicted IN ('not_needed','fyi') AND actual = 'needs_reply') AS fyi_upgraded,
+         (SELECT count(*)::int FROM items WHERE reason = 'not_needed') AS total_fyi,
+         (SELECT count(*)::int FROM items WHERE reason = 'ignored') AS nr_ignored,
+         (SELECT count(*)::int FROM items WHERE needs_reply_confidence IS NOT NULL) AS total_nr`,
     ),
 
     query<{ auto_ignored: string; restored: string }>(
-      `SELECT count(*) FILTER (WHERE state = 'auto_ignored')::int AS auto_ignored,
+      `SELECT count(*) FILTER (WHERE reason = 'filtered')::int AS auto_ignored,
               count(*) FILTER (WHERE restored_from_filter)::int AS restored
          FROM items`,
     ),

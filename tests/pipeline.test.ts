@@ -20,22 +20,20 @@ describe('full fixture sync', () => {
     // Client asked a question, nobody answered.
     expect(states['Q3 invoice discrepancy']).toBe('needs_reply');
     // Replied from a different mailbox than the one that received it.
-    expect(states['Renewal terms']).toBe('replied');
+    expect(states['Renewal terms']).toBe('no_reply_needed');
     // Client mail Gmail filed under Updates stays visible.
     expect(states['Integration timeline?']).toBe('needs_reply');
-    // Rules catch the machine-generated mail.
-    expect(states['Last chance: 40% off analytics seats']).toBe('auto_ignored');
-    expect(states['Automatic reply: Project sync']).toBe('auto_ignored');
-    expect(states['Delivery Status Notification (Failure)']).toBe('auto_ignored');
-    expect(states['Accepted: Quarterly review']).toBe('auto_ignored');
-    // "Thanks!" after our reply is FYI, not a reopen.
-    expect(states['Shipping address update']).toBe('fyi');
+    // Machine-generated mail is closed.
+    expect(states['Last chance: 40% off analytics seats']).toBe('no_reply_needed');
+    expect(states['Automatic reply: Project sync']).toBe('no_reply_needed');
+    expect(states['Delivery Status Notification (Failure)']).toBe('no_reply_needed');
+    expect(states['Accepted: Quarterly review']).toBe('no_reply_needed');
+    // "Thanks!" after our reply closes rather than reopening.
+    expect(states['Shipping address update']).toBe('no_reply_needed');
     // A real follow-up after our reply does reopen.
     expect(states['Onboarding checklist']).toBe('needs_reply');
     // An internal-only forward is not a reply.
     expect(states['Contract redlines']).toBe('needs_reply');
-    // Unknown personal address still surfaces, unmatched.
-    expect(states['Question about your pricing']).toBe('needs_reply');
   });
 
   it('creates no item for an internal-only thread', async () => {
@@ -123,7 +121,7 @@ describe('reply detection', () => {
     const ctx = await loadOrgContext();
     await ingestMessage(reply, 'priya@cubehq.ai', ctx);
 
-    expect((await statesBySubject())['Q3 invoice discrepancy']).toBe('replied');
+    expect((await statesBySubject())['Q3 invoice discrepancy']).toBe('no_reply_needed');
   });
 
   it('does not count a reply that only went to colleagues', async () => {
@@ -148,7 +146,7 @@ describe('reply detection', () => {
     expect(Number(drafts[0]!.n)).toBeGreaterThan(0);
   });
 
-  it('reopens a replied item when the client writes again', async () => {
+  it('reopens a closed item when the client writes again', async () => {
     await syncAllMailboxes();
     const ctx = await loadOrgContext();
 

@@ -6,11 +6,13 @@ import { classifyMessage } from './classify.js';
 import { matchClient } from './clientMatch.js';
 import { resolveConversation } from './conversations.js';
 import type { OrgContext } from './context.js';
-import { applyFilters } from './filters.js';
+import { triage } from './triage.js';
+import { recordSentRecipients } from './contacted.js';
 import { normalize, type NormalizedMessage } from './normalize.js';
 import { resolveOwnership, userIdForEmail } from './ownership.js';
 import { evaluateRules, recordRuleMatches } from './rules.js';
 import { recomputeItemState, type ItemState } from './stateMachine.js';
+import { config } from '../lib/config.js';
 
 export interface IngestResult {
   skipped: boolean;
@@ -61,7 +63,13 @@ export async function ingestMessage(raw: RawMessage, mailbox: string, ctx: OrgCo
 
   // An internal message is a potential reply event, never a new item (SPEC 4 step 2).
   if (senderInternal) {
-    const result = await tx((c) => recomputeItemState(c, stored.conversationId));
+    const result = await tx(async (c) => {
+      // Our own outbound mail is what builds the prior-contact index.
+      if (!msg.isDraft) {
+        await recordSentRecipients(c, [...msg.to, ...msg.cc, ...msg.bcc], msg.internalDate, (e) => ctx.isInternal(e), ctx.clients.freeDomains);
+      }
+      return recomputeItemState(c, stored.conversationId);
+    });
     return { skipped: false, reason: 'internal_reply_event', conversationId: stored.conversationId, state: result?.state, duplicate: stored.duplicate };
   }
 
@@ -74,26 +82,28 @@ export async function ingestMessage(raw: RawMessage, mailbox: string, ctx: OrgCo
     ? { clientId: ruleVerdict.clientId, matchedOn: 'rule' as const, matchedValue: null }
     : matchClient(ctx.clients, msg.fromEmail, externalParticipants.filter((e) => e !== msg.fromEmail));
 
-  const standard = applyFilters(msg, {
+  // --- Triage: client mail, then bulk, then prior-contact (override 2).
+  let verdict = triage(msg, match, {
     isClient: match.clientId !== null,
     blockedSenders: ctx.blockedSenders,
     blockedDomains: ctx.blockedDomains,
-    allowedSenders: ctx.allowedSenders,
+    contacts: ctx.contacts,
   });
 
-  const verdict = ruleVerdict.ignoreReason
-    ? { ...standard, filtered: true, reason: ruleVerdict.ignoreReason }
-    : ruleVerdict.allowed
-      ? { ...standard, filtered: false, reason: null }
-      : standard;
+  // A rule can override the triage outcome in either direction.
+  if (ruleVerdict.ignoreReason) {
+    verdict = { ...verdict, classify: false, reason: 'filtered', filterReason: ruleVerdict.ignoreReason };
+  } else if (ruleVerdict.allowed && verdict.reason === 'filtered') {
+    verdict = { ...verdict, classify: true, reason: null, filterReason: null };
+  }
 
   await query('UPDATE messages SET filter_reason = $2, is_auto = $3, is_bounce = $4 WHERE id = $1', [
-    stored.messageId, verdict.reason, verdict.isAuto, verdict.isBounce,
+    stored.messageId, verdict.filterReason, verdict.filterReason !== null, verdict.filterReason === 'bounce',
   ]);
 
   // --- Phase B: classify, unless filtered out. Never pay for a filtered message (SPEC 13).
   let classification = null as Awaited<ReturnType<typeof classifyMessage>> | null;
-  if (!verdict.filtered && !stored.duplicate) {
+  if (verdict.classify && !stored.duplicate) {
     const lastInternal = await query<{ body_text_trunc: string | null }>(
       `SELECT body_text_trunc FROM messages
         WHERE conversation_id = $1 AND direction = 'out' AND is_draft = false
@@ -122,38 +132,40 @@ export async function ingestMessage(raw: RawMessage, mailbox: string, ctx: OrgCo
   const ownerUserId = await userIdForEmail(ownership.ownerEmail);
 
   const final = await tx(async (c) => {
-    const initialState: ItemState = verdict.filtered
-      ? 'auto_ignored'
-      : classification && !classification.needsReply
-        ? 'fyi'
-        : 'needs_reply';
+    const closed = verdict.reason === 'filtered' || (classification !== null && !classification.needsReply);
+    const initialState: ItemState = closed ? 'no_reply_needed' : 'needs_reply';
+    const reason = verdict.reason === 'filtered' ? 'filtered' : closed ? 'not_needed' : null;
+    const lowConfidence =
+      classification !== null && classification.confidence < config.classifier.threshold;
 
     const itemRes = await c.query<{ id: string }>(
-      `INSERT INTO items (conversation_id, source, state, client_id, owner_user_id, watchers,
-                          priority, intent, needs_reply_confidence, summary, filter_reason, last_external_at)
-       VALUES ($1,'gmail',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      `INSERT INTO items (conversation_id, source, state, reason, client_id, owner_user_id, watchers,
+                          needs_reply_confidence, summary, filter_reason, last_external_at,
+                          low_confidence, unmatched_client)
+       VALUES ($1,'gmail',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        ON CONFLICT (conversation_id) DO UPDATE SET
          client_id      = COALESCE(items.client_id, EXCLUDED.client_id),
          owner_user_id  = COALESCE(items.owner_user_id, EXCLUDED.owner_user_id),
          watchers       = ARRAY(SELECT DISTINCT unnest(items.watchers || EXCLUDED.watchers)),
-         priority       = COALESCE(EXCLUDED.priority, items.priority),
-         intent         = COALESCE(EXCLUDED.intent, items.intent),
          needs_reply_confidence = COALESCE(EXCLUDED.needs_reply_confidence, items.needs_reply_confidence),
          summary        = COALESCE(EXCLUDED.summary, items.summary),
+         low_confidence = EXCLUDED.low_confidence,
+         unmatched_client = EXCLUDED.unmatched_client,
          updated_at     = now()
        RETURNING id`,
       [
         stored.conversationId,
         initialState,
+        reason,
         match.clientId,
         ownerUserId,
         ownership.watchers,
-        ruleVerdict.priority ?? classification?.priority ?? 'normal',
-        classification?.intent ?? null,
         classification?.confidence ?? null,
         classification?.summary ?? msg.subject.slice(0, 300),
-        verdict.reason,
+        verdict.filterReason,
         msg.internalDate,
+        lowConfidence,
+        verdict.unmatchedClient,
       ],
     );
     const itemId = Number(itemRes.rows[0]!.id);
@@ -167,7 +179,7 @@ export async function ingestMessage(raw: RawMessage, mailbox: string, ctx: OrgCo
   });
 
   logger.debug(
-    { mailbox: msg.mailbox, from: msg.fromEmail, state: final.state, filtered: verdict.reason, client: match.clientId },
+    { mailbox: msg.mailbox, from: msg.fromEmail, state: final.state, branch: verdict.branch, client: match.clientId },
     'ingested message',
   );
 

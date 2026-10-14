@@ -364,11 +364,9 @@ export async function sendReply(user: SessionUser, input: SendReplyInput): Promi
     return { state: thread.state, dryRun: !config.safety.sendEnabled, draftId: draft.id };
   }
 
-  // Optimistic: flip to sending immediately, then let sync confirm (SPEC 9).
-  await query(
-    `UPDATE items SET state = 'sending', sending_since = now(), state_since = now(), last_error = NULL, updated_at = now() WHERE id = $1`,
-    [input.itemId],
-  );
+  // There is no interim state: the item closes as `replied` only once sync
+  // sees the sent message (override 1).
+  await query('UPDATE items SET last_error = NULL, updated_at = now() WHERE id = $1', [input.itemId]);
 
   try {
     const result = await gmail.send(sendAs, mime, thread.reply.threadId ?? undefined);
@@ -378,10 +376,8 @@ export async function sendReply(user: SessionUser, input: SendReplyInput): Promi
     });
 
     if (result.dryRun) {
-      // Nothing was really sent, so do not leave the item stuck in `sending`.
       await query(
-        `UPDATE items SET state = 'needs_reply', sending_since = NULL,
-                          last_error = 'SEND_ENABLED=false — message logged, not sent', updated_at = now()
+        `UPDATE items SET last_error = 'SEND_ENABLED=false — message logged, not sent', updated_at = now()
           WHERE id = $1`,
         [input.itemId],
       );
@@ -390,10 +386,10 @@ export async function sendReply(user: SessionUser, input: SendReplyInput): Promi
 
     await refreshConversation(thread.conversationId);
     const after = await one<{ state: string }>('SELECT state FROM items WHERE id = $1', [input.itemId]);
-    return { state: after?.state ?? 'sending', dryRun: false, messageId: result.rfcMessageId };
+    return { state: after?.state ?? 'needs_reply', dryRun: false, messageId: result.rfcMessageId };
   } catch (err) {
     await query(
-      `UPDATE items SET state = 'needs_reply', sending_since = NULL, last_error = $2, updated_at = now() WHERE id = $1`,
+      `UPDATE items SET state = 'needs_reply', reason = NULL, last_error = $2, updated_at = now() WHERE id = $1`,
       [input.itemId, String(err)],
     );
     logger.error({ itemId: input.itemId, err }, 'send failed');

@@ -210,6 +210,30 @@ export const FIXTURE_MESSAGES: Spec[] = [
     body: 'Claire has accepted this invitation.',
   },
 
+  // T16 — We wrote to a supplier once, so the domain counts as contacted.
+  {
+    mailboxes: ['rahul@cubehq.ai'], thread: 't-supplier-1', messageId: '<supplier-0@cubehq.ai>',
+    from: 'rahul@cubehq.ai', to: ['vendor@supplier.example'],
+    subject: 'Quote for next quarter', agoMs: 6 * DAY, labels: ['SENT'],
+    body: 'Could you send a quote for next quarter?',
+  },
+  // T17 — A different person at that same supplier writes in. Not a client,
+  // but we have corresponded: expect needs_reply with unmatched_client.
+  {
+    mailboxes: ['rahul@cubehq.ai'], thread: 't-supplier-2', messageId: '<supplier-1@supplier.example>',
+    from: 'newperson@supplier.example', to: ['rahul@cubehq.ai'],
+    subject: 'Taking over the account', agoMs: 20 * HOUR, labels: ['INBOX'],
+    body: 'Hi, I am taking over this account from my colleague. Could you confirm the current scope?',
+  },
+  // T18 — Cold outreach from a domain we have never written to: filtered,
+  // and with no model call.
+  {
+    mailboxes: ['priya@cubehq.ai'], thread: 't-cold-1', messageId: '<cold-1@coldoutreach.example>',
+    from: 'sales@coldoutreach.example', to: ['priya@cubehq.ai'],
+    subject: 'Quick question about your SEO stack', agoMs: 9 * HOUR, labels: ['INBOX'],
+    body: 'Hi, I noticed your agency works with ecommerce brands. Do you have 15 minutes this week?',
+  },
+
   // T15 — A high-priority complaint, to exercise priority + alerting.
   {
     mailboxes: ['priya@cubehq.ai'], thread: 't-urgent-1', messageId: '<urgent-1@acme.com>',

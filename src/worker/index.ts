@@ -6,9 +6,9 @@ import { isEntrypoint } from '../lib/main.js';
 import { syncClients } from '../sync/clients.js';
 import { sendDailyDigests, sendImmediateAlerts } from '../sync/digest.js';
 import { discoverMailboxes } from '../sync/discovery.js';
-import { clearExpiredLocks, sweepAwaitingClient, sweepStuckSends, wakeSnoozed } from '../sync/followup.js';
 import { syncAllMailboxes } from '../sync/mailboxSync.js';
 import { reconcileOpenItems } from '../sync/reconcile.js';
+import { clearExpiredLocks } from '../sync/locks.js';
 import { checkUnrespondedItems } from '../sync/hourly.js';
 import { purgeOldBodies } from '../sync/retention.js';
 import { renewWatches } from '../sync/watch.js';
@@ -56,10 +56,8 @@ export function startWorker(): void {
   // Client + domain sync from the dashboard DB (SPEC 10).
   cron.schedule('*/15 * * * *', guarded('sync-clients', () => syncClients()), { timezone: tz });
 
-  // Short sweeps: wake snoozes, fail stuck sends, drop expired locks.
+  // Short sweep: drop expired composer locks and send overdue alerts.
   cron.schedule('*/5 * * * *', guarded('sweeps', async () => ({
-    woken: await wakeSnoozed(),
-    stuckSends: await sweepStuckSends(),
     locks: await clearExpiredLocks(),
     alerts: await sendImmediateAlerts(),
   })), { timezone: tz });
@@ -81,10 +79,7 @@ export function startWorker(): void {
   cron.schedule('30 4 * * *', guarded('purge-bodies', purgeOldBodies), { timezone: tz });
 
   // Follow-up sweep and the daily digests (SPEC 6, 8).
-  cron.schedule('0 8 * * 1-5', guarded('digests', async () => ({
-    awaiting: await sweepAwaitingClient(),
-    digests: await sendDailyDigests(),
-  })), { timezone: tz });
+  cron.schedule('0 8 * * 1-5', guarded('digests', () => sendDailyDigests()), { timezone: tz });
 
   logger.info({ timezone: tz, pubsub: config.pubsub.topic ? 'push + poll' : 'poll only' }, 'worker scheduled');
 }

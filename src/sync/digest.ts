@@ -7,7 +7,6 @@ export interface DigestLine {
   clientName: string | null;
   ageHours: number;
   overdue: boolean;
-  priority: string;
   itemId: number;
 }
 
@@ -46,7 +45,7 @@ export function getNotifier(): Notifier { return notifier; }
 export async function buildOwnerDigests(): Promise<OwnerDigest[]> {
   const rows = await query<any>(
     `SELECT u.email AS owner_email, i.id, c.subject, cl.name AS client_name,
-            i.priority, i.last_external_at, i.sla_due_at
+            i.last_external_at, i.sla_due_at
        FROM items i
        JOIN conversations c ON c.id = i.conversation_id
        JOIN users u ON u.id = i.owner_user_id
@@ -64,7 +63,6 @@ export async function buildOwnerDigests(): Promise<OwnerDigest[]> {
       clientName: r.client_name,
       ageHours: r.last_external_at ? Math.round((Date.now() - new Date(r.last_external_at).getTime()) / 3_600_000) : 0,
       overdue: Boolean(r.sla_due_at && new Date(r.sla_due_at) < new Date()),
-      priority: r.priority,
     };
     entry.open.push(line);
     if (line.overdue) entry.overdue.push(line);
@@ -138,13 +136,13 @@ export async function sendDailyDigests(): Promise<DigestRunResult> {
  */
 export async function sendImmediateAlerts(): Promise<number> {
   const rows = await query<any>(
-    `SELECT i.id, c.subject, cl.name AS client_name, u.email AS owner_email, i.intent, i.priority
+    `SELECT i.id, c.subject, cl.name AS client_name, u.email AS owner_email
        FROM items i
        JOIN conversations c ON c.id = i.conversation_id
        LEFT JOIN clients cl ON cl.id = i.client_id
        LEFT JOIN users u ON u.id = i.owner_user_id
       WHERE i.state = 'needs_reply'
-        AND (i.priority = 'high' OR i.intent = 'complaint')
+        AND i.sla_due_at < now()
         AND NOT EXISTS (
           SELECT 1 FROM audit_log a WHERE a.item_id = i.id AND a.action = 'immediate_alert'
         )`,
@@ -153,10 +151,10 @@ export async function sendImmediateAlerts(): Promise<number> {
   const n = getNotifier();
   for (const r of rows) {
     const to = r.owner_email ?? config.server.devUserEmail;
-    await n.send(to, `Urgent: ${r.client_name ?? 'unmatched'} — ${r.subject}`,
-      `A ${r.intent ?? 'high priority'} message is waiting.\n\nClient: ${r.client_name ?? 'unmatched'}\nSubject: ${r.subject}`);
+    await n.send(to, `Overdue: ${r.client_name ?? 'unmatched'} — ${r.subject}`,
+      `This has passed its SLA and is still waiting.\n\nClient: ${r.client_name ?? 'unmatched'}\nSubject: ${r.subject}`);
     await query("INSERT INTO audit_log (user_email, action, item_id, payload) VALUES (NULL,'immediate_alert',$1,$2)", [
-      r.id, JSON.stringify({ to, intent: r.intent, priority: r.priority }),
+      r.id, JSON.stringify({ to }),
     ]);
   }
   if (rows.length) logger.info({ count: rows.length }, 'immediate alerts sent');

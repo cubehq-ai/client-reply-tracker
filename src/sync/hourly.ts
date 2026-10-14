@@ -21,7 +21,7 @@ export interface HourlyCheckResult {
 export async function checkUnrespondedItems(limit = 500): Promise<HourlyCheckResult> {
   const rows = await query<{ id: string; conversation_id: string; state: string }>(
     `SELECT id, conversation_id, state FROM items
-      WHERE state IN ('needs_reply','sending','handled_elsewhere')
+      WHERE state = 'needs_reply'
       ORDER BY updated_at ASC
       LIMIT $1`,
     [limit],

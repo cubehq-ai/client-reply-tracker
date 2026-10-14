@@ -48,13 +48,13 @@ describe('unresponded threshold', () => {
   it('the two buckets always add up to the open items', async () => {
     await ageOpenItems(20);
     const facets = await inboxFacets(admin, {});
-    expect(facets.notReplied + facets.fresh).toBe(facets.status.needs_reply ?? 0);
+    expect(facets.notReplied + facets.fresh).toBe(facets.needsReply);
   });
 
   it('filters the list itself, not only the counts', async () => {
     await ageOpenItems(20);
-    const aged = await listQueue(admin, 'inbox', { status: ['needs_reply'], freshness: 'aged' });
-    const fresh = await listQueue(admin, 'inbox', { status: ['needs_reply'], freshness: 'fresh' });
+    const aged = await listQueue(admin, 'needs_reply', { freshness: 'aged' });
+    const fresh = await listQueue(admin, 'needs_reply', { freshness: 'fresh' });
     expect(aged.total).toBeGreaterThan(0);
     expect(fresh.total).toBe(0);
   });

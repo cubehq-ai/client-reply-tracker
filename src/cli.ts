@@ -10,7 +10,6 @@ import { reconcileOpenItems } from './sync/reconcile.js';
 import { renewWatches } from './sync/watch.js';
 import { purgeOldBodies } from './sync/retention.js';
 import { sendDailyDigests, sendImmediateAlerts } from './sync/digest.js';
-import { sweepAwaitingClient, sweepStuckSends, wakeSnoozed } from './sync/followup.js';
 import { modelStatus, trainLocalClassifier } from './llm/localClassifier.js';
 import { applyRoster } from './sync/roster.js';
 import { inspectInternalDb, testInternalDb } from './sync/internalDb.js';
@@ -19,6 +18,8 @@ import { checkGoogleAccess } from './sync/googleCheck.js';
 import { checkMongoCredential, inspectInternalMongo } from './sync/internalMongo.js';
 import { buildClientRecords, markChurnedClients, syncTeamsFromInternal } from './sync/internalSync.js';
 import { checkUnrespondedItems } from './sync/hourly.js';
+import { backfillContacts, contactStats } from './pipeline/contacted.js';
+import { loadOrgContext } from './pipeline/context.js';
 
 const commands: Record<string, () => Promise<unknown>> = {
   migrate: () => migrate(),
@@ -35,7 +36,6 @@ const commands: Record<string, () => Promise<unknown>> = {
   'purge-bodies': () => purgeOldBodies(),
   digests: () => sendDailyDigests(),
   alerts: () => sendImmediateAlerts(),
-  sweeps: async () => ({ woken: await wakeSnoozed(), stuckSends: await sweepStuckSends(), awaiting: await sweepAwaitingClient() }),
   'train-classifier': () => trainLocalClassifier(),
   'classifier-status': () => modelStatus(),
   roster: () => applyRoster(),
@@ -52,6 +52,8 @@ const commands: Record<string, () => Promise<unknown>> = {
   'sync-teams': () => syncTeamsFromInternal(),
   'sync-churned': () => markChurnedClients(),
   'hourly-status': () => checkUnrespondedItems(),
+  'backfill-contacts': async () => backfillContacts((await loadOrgContext()).orgDomains),
+  'contact-stats': () => contactStats(),
   bootstrap: async () => {
     await migrate();
     await seedReferenceData();

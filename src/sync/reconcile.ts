@@ -10,12 +10,11 @@ export interface ReconcileResult {
 /**
  * Nightly reconciliation (SPEC 3.2): recompute every open item from the stored
  * messages. Catches drift from missed pushes, merges and crashed syncs.
- * Also wakes snoozed items whose time has come.
  */
 export async function reconcileOpenItems(): Promise<ReconcileResult> {
   const rows = await query<{ id: string; conversation_id: string; state: string }>(
     `SELECT id, conversation_id, state FROM items
-      WHERE state IN ('needs_reply','sending','snoozed','replied','fyi','handled_elsewhere','ignored')
+      WHERE state = 'needs_reply' OR reason IN ('replied','not_needed')
       ORDER BY updated_at ASC`,
   );
 

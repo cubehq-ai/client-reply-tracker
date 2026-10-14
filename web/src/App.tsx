@@ -17,13 +17,13 @@ type Page =
 type InboxPage = Extract<Page, { kind: 'inbox' }>;
 
 const INBOX_SUBTITLE =
-  'Client mail with no reply from us. Status, overdue and unmatched are filters on it, not separate places.';
+  'Two tabs. Everything else — overdue, unmatched, low confidence — is a filter on them.';
 
 const INBOX: InboxPage = {
   kind: 'inbox',
   title: 'Inbox',
   subtitle: INBOX_SUBTITLE,
-  preset: { source: 'gmail', view: 'all', status: 'needs_reply', freshness: 'aged' },
+  preset: { source: 'gmail', view: 'all', tab: 'needs_reply' },
 };
 
 export function App() {
@@ -92,7 +92,7 @@ export function App() {
         <div className="nav-group">Work</div>
         <button
           className={`nav-item ${isInbox && page.title === 'Inbox' ? 'active' : ''}`}
-          onClick={() => goInbox({ source: 'gmail', view: 'all', status: 'needs_reply', freshness: 'aged' })}
+          onClick={() => goInbox({ source: 'gmail', view: 'all', tab: 'needs_reply' })}
         >
           Inbox
         </button>

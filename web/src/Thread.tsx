@@ -162,7 +162,7 @@ export function Thread({ itemId, user, clients, onClose, onChanged }: {
             <div style={{ minWidth: 0 }}>
               <h1 style={{ fontSize: 16 }}>{thread?.subject ?? 'Loading…'}</h1>
               <div className="muted" style={{ fontSize: 12.5 }}>
-                {thread?.clientName ?? 'Unmatched'} · {thread?.state}
+                {thread?.clientName ?? 'Unmatched'} · {thread?.state === 'needs_reply' ? 'needs reply' : 'no reply needed'}
                 {thread && ` · ${thread.messages.length} message${thread.messages.length === 1 ? '' : 's'}`}
                 {refreshing && <span> · checking for new replies…</span>}
               </div>
@@ -288,11 +288,17 @@ export function Thread({ itemId, user, clients, onClose, onChanged }: {
               <button className="btn small primary" onClick={() => openComposer(lastMessageId, true)}>Reply</button>
             )}
             <button className={`btn small ${panel === 'ignore' ? 'primary' : ''}`} onClick={() => setPanel(panel === 'ignore' ? null : 'ignore')}>Ignore</button>
-            {thread?.state === 'fyi' && (
-              <button className="btn small" disabled={busy} onClick={() => run(() => api.act(itemId, 'needs-reply'), 'Moved to Needs Reply.')}>Actually needs reply</button>
+            {thread?.state === 'needs_reply' && (
+              <button className="btn small" disabled={busy}
+                onClick={() => run(() => api.act(itemId, 'no-reply-needed'), 'Marked no reply needed.')}>
+                No reply needed
+              </button>
             )}
-            {thread?.state === 'ignored' && (
-              <button className="btn small" disabled={busy} onClick={() => run(() => api.act(itemId, 'undo-ignore'), 'Ignore undone.')}>Undo ignore</button>
+            {thread?.state === 'no_reply_needed' && (
+              <button className="btn small" disabled={busy}
+                onClick={() => run(() => api.act(itemId, 'needs-reply'), 'Moved to Needs reply.')}>
+                Needs reply
+              </button>
             )}
             {!thread?.clientName && (
               <button className={`btn small ${panel === 'link' ? 'primary' : ''}`} onClick={() => setPanel(panel === 'link' ? null : 'link')}>Link to client</button>

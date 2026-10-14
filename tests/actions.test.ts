@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { query } from '../src/db/pool.js';
 import {
-  acquireLock, handledElsewhere, ignoreItem, linkToClient, markNeedsReply,
-  reassignItem, snoozeItem, undoIgnore,
+  acquireLock, ignoreItem, linkToClient, markNeedsReply, reassignItem, undoIgnore,
 } from '../src/api/actions.js';
 import type { SessionUser } from '../src/api/auth.js';
 import { syncAllMailboxes } from '../src/sync/mailboxSync.js';
@@ -27,7 +26,7 @@ describe('ignore', () => {
   it('ignores a single message and leaves it reopenable', async () => {
     const item = await itemBySubject('Q3 invoice discrepancy');
     const res = await ignoreItem(admin, Number(item.id), 'not_needed', 'message');
-    expect(res.state).toBe('ignored');
+    expect(res.state).toBe('no_reply_needed');
     const after = await itemBySubject('Q3 invoice discrepancy');
     expect(after.muted).toBe(false);
   });
@@ -72,26 +71,7 @@ describe('ignore', () => {
   });
 });
 
-describe('snooze', () => {
-  it('snoozes until a future time', async () => {
-    const item = await itemBySubject('Q3 invoice discrepancy');
-    const until = new Date(Date.now() + 3_600_000);
-    const res = await snoozeItem(admin, Number(item.id), until);
-    expect(res.state).toBe('snoozed');
-  });
-
-  it('rejects a time in the past', async () => {
-    const item = await itemBySubject('Q3 invoice discrepancy');
-    await expect(snoozeItem(admin, Number(item.id), new Date(Date.now() - 1000))).rejects.toThrow(/future/);
-  });
-});
-
 describe('other actions', () => {
-  it('marks handled elsewhere', async () => {
-    const item = await itemBySubject('Q3 invoice discrepancy');
-    expect((await handledElsewhere(admin, Number(item.id), 'called them')).state).toBe('handled_elsewhere');
-  });
-
   it('reassigns and adds the new owner as a watcher', async () => {
     const item = await itemBySubject('Q3 invoice discrepancy');
     await reassignItem(admin, Number(item.id), 'rahul@cubehq.ai');
@@ -104,9 +84,9 @@ describe('other actions', () => {
     await expect(reassignItem(admin, Number(item.id), 'nobody@cubehq.ai')).rejects.toThrow(/no such user/);
   });
 
-  it('promotes an FYI and records the disagreement for training', async () => {
+  it('promotes a closed item and records the disagreement for training', async () => {
     const item = await itemBySubject('Shipping address update');
-    expect(item.state).toBe('fyi');
+    expect(item.state).toBe('no_reply_needed');
     await markNeedsReply(admin, Number(item.id));
     expect((await itemBySubject('Shipping address update')).state).toBe('needs_reply');
     const feedback = await query('SELECT * FROM classifier_feedback');

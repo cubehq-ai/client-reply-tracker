@@ -8,20 +8,19 @@ const CHANNELS = [
   { key: 'slack', label: 'Slack', ready: false },
 ];
 
-const STATUSES = [
-  { key: 'fyi', label: 'FYI' },
-  { key: 'snoozed', label: 'Snoozed' },
+/** Why a closed item is closed. Only meaningful on the second tab. */
+const REASONS = [
   { key: 'replied', label: 'Replied' },
-  { key: 'handled_elsewhere', label: 'Handled elsewhere' },
+  { key: 'not_needed', label: 'No reply needed' },
+  { key: 'filtered', label: 'Filtered' },
   { key: 'ignored', label: 'Ignored' },
-  { key: 'auto_ignored', label: 'Filtered' },
 ];
 
-/** Overlays are subsets of the list above, never siblings of it. */
-const OVERLAYS = [
-  { key: 'overdue', label: 'Overdue', facet: 'overdue' as const },
-  { key: 'unmatched', label: 'Unmatched', facet: 'unmatched' as const },
-  { key: 'awaitingClient', label: 'Awaiting client', facet: 'awaitingClient' as const },
+/** Flags on an item, not states: each narrows the current tab. */
+const FLAGS: { key: string; label: string; facet: 'overdue' | 'unmatched' | 'lowConfidence'; tab: string }[] = [
+  { key: 'overdue', label: 'Overdue', facet: 'overdue', tab: 'needs_reply' },
+  { key: 'unmatched', label: 'Unmatched client', facet: 'unmatched', tab: 'both' },
+  { key: 'lowConfidence', label: 'Low confidence', facet: 'lowConfidence', tab: 'both' },
 ];
 
 export type Filters = Record<string, string>;
@@ -42,6 +41,7 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
   const params = useMemo(() => {
     const p: Filters = { limit: '100', ...filters };
     if (!p.source) p.source = 'gmail';
+    if (!p.tab) p.tab = 'needs_reply';
     return p;
   }, [filters]);
 
@@ -59,15 +59,17 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
   const hours = data?.facets.thresholdHours ?? 12;
   /** Comma-separated filter value -> array, for the multi-selects. */
   const list = (v?: string): string[] => (v ? v.split(',').filter(Boolean) : []);
-  const statusSet = new Set((filters.status ?? '').split(',').filter(Boolean));
-  const toggleStatus = (key: string) => {
-    const next = new Set(statusSet);
+  const tab = filters.tab === 'no_reply_needed' ? 'no_reply_needed' : 'needs_reply';
+  const reasonSet = new Set((filters.reasons ?? '').split(',').filter(Boolean));
+  const toggleReason = (key: string) => {
+    const next = new Set(reasonSet);
     next.has(key) ? next.delete(key) : next.add(key);
-    set({ status: [...next].join(','), freshness: '' });
+    set({ reasons: [...next].join(',') });
   };
-  const toggleOverlay = (key: string) => set({ [key]: filters[key] === 'true' ? '' : 'true' });
+  const toggleFlag = (key: string) => set({ [key]: filters[key] === 'true' ? '' : 'true' });
 
-  const activeCount = Object.entries(filters).filter(([k, v]) => v && k !== 'source' && k !== 'view' && k !== 'status' && k !== 'freshness').length;
+  const activeCount = Object.entries(filters)
+    .filter(([k, v]) => v && !['source', 'view', 'tab', 'reasons', 'freshness'].includes(k)).length;
 
   return (
     <>
@@ -93,39 +95,57 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
         ))}
       </div>
 
+      <div className="tabs state-tabs">
+        <button
+          className={`tab ${tab === 'needs_reply' ? 'active' : ''}`}
+          onClick={() => set({ tab: 'needs_reply', reasons: '' })}
+        >
+          Needs reply <span className="tab-n">{data?.facets.needsReply ?? 0}</span>
+        </button>
+        <button
+          className={`tab ${tab === 'no_reply_needed' ? 'active' : ''}`}
+          onClick={() => set({ tab: 'no_reply_needed', overdue: '' })}
+        >
+          No reply needed <span className="tab-n">{data?.facets.noReplyNeeded ?? 0}</span>
+        </button>
+      </div>
+
       <div className="chips">
-        <button
-          className={`chip ${filters.freshness === 'aged' ? 'on' : ''}`}
-          title={`Client wrote more than ${hours}h ago and nobody has replied`}
-          onClick={() => set({ status: 'needs_reply', freshness: filters.freshness === 'aged' ? '' : 'aged' })}
-        >
-          Not replied ({hours}h+) <span className="chip-n">{data?.facets.notReplied ?? 0}</span>
-        </button>
-        <button
-          className={`chip ${filters.freshness === 'fresh' ? 'on' : ''}`}
-          title={`Waiting on us, but less than ${hours}h old`}
-          onClick={() => set({ status: 'needs_reply', freshness: filters.freshness === 'fresh' ? '' : 'fresh' })}
-        >
-          Awaiting (&lt;{hours}h) <span className="chip-n">{data?.facets.fresh ?? 0}</span>
-        </button>
-        <span className="chip-sep" />
-        {STATUSES.map((s) => {
-          const n = data?.facets.status[s.key] ?? 0;
-          return (
-            <button key={s.key} className={`chip ${statusSet.has(s.key) ? 'on' : ''}`} onClick={() => toggleStatus(s.key)}>
-              {s.label} <span className="chip-n">{n}</span>
+        {tab === 'needs_reply' ? (
+          <>
+            <button
+              className={`chip ${filters.freshness === 'aged' ? 'on' : ''}`}
+              title={`Waiting more than ${hours} hours`}
+              onClick={() => set({ freshness: filters.freshness === 'aged' ? '' : 'aged' })}
+            >
+              Waiting {hours}h+ <span className="chip-n">{data?.facets.notReplied ?? 0}</span>
             </button>
-          );
-        })}
-        <span className="chip-sep" />
-        {classifier !== 'heuristic' && (
-          <button className={`chip ${filters.lowConfidence === 'true' ? 'on' : ''}`} onClick={() => toggleOverlay('lowConfidence')}>
-            Low confidence <span className="chip-n">{data?.facets.lowConfidence ?? 0}</span>
-          </button>
+            <button
+              className={`chip ${filters.freshness === 'fresh' ? 'on' : ''}`}
+              title={`Arrived in the last ${hours} hours`}
+              onClick={() => set({ freshness: filters.freshness === 'fresh' ? '' : 'fresh' })}
+            >
+              Recent (&lt;{hours}h) <span className="chip-n">{data?.facets.fresh ?? 0}</span>
+            </button>
+            <span className="chip-sep" />
+          </>
+        ) : (
+          <>
+            {REASONS.map((r) => {
+              const on = reasonSet.has(r.key);
+              return (
+                <button key={r.key} className={`chip ${on ? 'on' : ''}`} onClick={() => toggleReason(r.key)}>
+                  {r.label} <span className="chip-n">{data?.facets.reasons[r.key] ?? 0}</span>
+                </button>
+              );
+            })}
+            <span className="chip-sep" />
+          </>
         )}
-        {OVERLAYS.map((o) => (
-          <button key={o.key} className={`chip ${filters[o.key] === 'true' ? 'on' : ''}`} onClick={() => toggleOverlay(o.key)}>
-            {o.label} <span className="chip-n">{data?.facets[o.facet] ?? 0}</span>
+
+        {FLAGS.filter((f) => f.tab === 'both' || f.tab === tab).map((f) => (
+          <button key={f.key} className={`chip ${filters[f.key] === 'true' ? 'on' : ''}`} onClick={() => toggleFlag(f.key)}>
+            {f.label} <span className="chip-n">{data?.facets[f.facet] ?? 0}</span>
           </button>
         ))}
       </div>
@@ -163,16 +183,7 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
             selected={list(filters.ages)}
             onChange={(v) => set({ ages: v.join(',') })}
           />
-          <MultiSelect
-            label="Priority"
-            options={[
-              { value: 'high', label: 'High' },
-              { value: 'normal', label: 'Normal' },
-              { value: 'low', label: 'Low' },
-            ]}
-            selected={list(filters.priorities)}
-            onChange={(v) => set({ priorities: v.join(',') })}
-          />
+
         </div>
 
         <div className="toolbar-actions">
@@ -213,22 +224,23 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
             <div className="row-title">
               <StateDot state={it.state} />
               {it.subject}
-              {it.priority === 'high' && <span className="tag high">high</span>}
               {it.overdue && <span className="tag overdue">overdue</span>}
               {it.muted && <span className="tag">muted</span>}
+              {it.reason && <span className="tag">{REASONS.find((r) => r.key === it.reason)?.label ?? it.reason}</span>}
               {it.filterReason && <span className="tag">{it.filterReason}</span>}
+              {it.lowConfidence && classifier !== 'heuristic' && <span className="tag low-conf">low confidence</span>}
             </div>
             <div className="row-right">
               {timeAgo(it.lastExternalAt)}
               {it.slaDueAt && it.state === 'needs_reply' && <div style={{ fontSize: 11 }}>{formatDue(it.slaDueAt)}</div>}
-              {it.snoozedUntil && <div style={{ fontSize: 11 }}>wakes {new Date(it.snoozedUntil).toLocaleDateString()}</div>}
+
             </div>
             <div className="row-meta">
               <span className={`tag ${it.clientName ? 'client' : ''}`}>{it.clientName ?? 'unmatched'}</span>
               {it.teamName && <span className="tag">{it.teamName}</span>}
               <span>{it.fromEmail}</span>
               <span>owner: {it.ownerEmail ?? 'unowned'}</span>
-              {it.intent && <span>{it.intent}</span>}
+
               {it.summary && <span style={{ flexBasis: '100%' }}>{it.summary}</span>}
             </div>
           </div>

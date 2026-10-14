@@ -2,6 +2,7 @@ import { query } from '../db/pool.js';
 import { config } from '../lib/config.js';
 import { loadClientIndex, type ClientIndex } from './clientMatch.js';
 import { loadMatchRules, type CompiledRule } from './rules.js';
+import { loadContactIndex, type ContactIndex } from './contacted.js';
 import { domainOf } from './normalize.js';
 
 export interface OrgContext {
@@ -16,13 +17,14 @@ export interface OrgContext {
   excludedLabels: Set<string>;
   clients: ClientIndex;
   matchRules: CompiledRule[];
+  contacts: ContactIndex;
   accountManagerByClient: Map<number, string>;
   isInternal(email: string): boolean;
   isSharedInbox(email: string): boolean;
 }
 
 export async function loadOrgContext(): Promise<OrgContext> {
-  const [domains, rules, mailboxes, clients, ams, exclusions, matchRules] = await Promise.all([
+  const [domains, rules, mailboxes, clients, ams, exclusions, matchRules, contacts] = await Promise.all([
     query<{ domain: string; is_group: boolean }>('SELECT domain, is_group FROM org_domains'),
     query<{ type: string; value: string }>('SELECT type, value FROM rules'),
     query<{ email: string; kind: string }>("SELECT email, kind FROM mailboxes"),
@@ -32,6 +34,7 @@ export async function loadOrgContext(): Promise<OrgContext> {
     ),
     query<{ kind: string; value: string }>('SELECT kind, value FROM exclusions'),
     loadMatchRules(),
+    loadContactIndex(),
   ]);
 
   const orgDomains = new Set<string>([...config.org.domains, ...domains.map((d) => d.domain.toLowerCase())]);
@@ -61,6 +64,7 @@ export async function loadOrgContext(): Promise<OrgContext> {
     excludedLabels,
     clients,
     matchRules,
+    contacts,
     accountManagerByClient: new Map(ams.map((a) => [Number(a.client_id), a.email.toLowerCase()])),
     isInternal(email: string): boolean {
       const e = email.toLowerCase();

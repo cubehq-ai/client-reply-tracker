@@ -3,25 +3,27 @@ import { getLlmClient } from '../llm/index.js';
 import { localClassify } from '../llm/localClassifier.js';
 import type { Classification, ClassificationInput } from '../llm/types.js';
 
-const ACK_PATTERN = new RegExp(`^(thanks(\\s+(so much|a lot|again|a ton))?|thank you(\\s+(so much|very much))?|many thanks|thx|ta|got it|received|noted|perfect|great|awesome|excellent|will do|sounds good|ok(ay)?|understood|appreciate it|cheers|no worries|all good|that works)([\\s,.!;:-]+(thanks(\\s+(so much|a lot|again|a ton))?|thank you(\\s+(so much|very much))?|many thanks|thx|ta|got it|received|noted|perfect|great|awesome|excellent|will do|sounds good|ok(ay)?|understood|appreciate it|cheers|no worries|all good|that works))*[\\s!.,:)]*$`, 'i');
+const ACK_PATTERN = /\b(thanks|thank you|thx|got it|received|noted|perfect|great|awesome|will do|sounds good|ok|okay|understood|appreciate it|cheers|no worries|all good)\b/i;
+
+/** Words that mean the sender still wants something, whatever else they said. */
+const ASK_PATTERN = /\b(can you|could you|please|need|when|send|share|confirm|update)\b/i;
 
 /**
- * Tier A (SPEC 4 step 5): a very short acknowledgement with no question mark is
- * FYI without paying for a model call. Deliberately narrow — anything longer or
- * containing a question falls through to Tier B.
+ * The free pre-check (CLAUDE.md override 3). Deliberately conservative: it
+ * only closes a message that is short, reads as an acknowledgement, asks no
+ * question and contains no request. Anything else goes to the model.
  */
 export function heuristicClassify(input: ClassificationInput): Classification | null {
   const body = input.body.trim();
-  if (body.length === 0) return null;
-  if (body.length > 80 || body.includes('?')) return null;
-  const firstLine = body.split('\n')[0]?.trim() ?? '';
-  if (!ACK_PATTERN.test(firstLine)) return null;
+  if (body.length === 0 || body.length >= 200) return null;
+  if (body.includes('?')) return null;
+  if (!ACK_PATTERN.test(body)) return null;
+  if (ASK_PATTERN.test(body)) return null;
+
   return {
     needsReply: false,
-    confidence: 0.8,
-    intent: 'fyi',
-    priority: 'low',
-    summary: `Acknowledgement: ${firstLine.slice(0, 60)}`,
+    confidence: 0.9,
+    summary: body.split('\n')[0]?.slice(0, 120) ?? 'Acknowledgement',
     tier: 'heuristic',
   };
 }
@@ -32,15 +34,13 @@ export function heuristicClassify(input: ClassificationInput): Classification | 
  */
 export async function classifyMessage(rfcMessageId: string, input: ClassificationInput): Promise<Classification> {
   const cached = await one<{
-    needs_reply: boolean; confidence: number; intent: string; priority: string; summary: string; tier: string; model: string | null;
-  }>('SELECT needs_reply, confidence, intent, priority, summary, tier, model FROM classifications WHERE rfc_message_id = $1', [rfcMessageId]);
+    needs_reply: boolean; confidence: number; summary: string; tier: string; model: string | null;
+  }>('SELECT needs_reply, confidence, summary, tier, model FROM classifications WHERE rfc_message_id = $1', [rfcMessageId]);
 
   if (cached) {
     return {
       needsReply: cached.needs_reply,
       confidence: Number(cached.confidence),
-      intent: cached.intent as Classification['intent'],
-      priority: cached.priority as Classification['priority'],
       summary: cached.summary,
       tier: cached.tier as Classification['tier'],
       model: cached.model ?? undefined,
@@ -55,10 +55,10 @@ export async function classifyMessage(rfcMessageId: string, input: Classificatio
     (await getLlmClient().classify(input));
 
   await query(
-    `INSERT INTO classifications (rfc_message_id, needs_reply, confidence, intent, priority, summary, tier, model)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+    `INSERT INTO classifications (rfc_message_id, needs_reply, confidence, summary, tier, model)
+     VALUES ($1,$2,$3,$4,$5,$6)
      ON CONFLICT (rfc_message_id) DO NOTHING`,
-    [rfcMessageId, result.needsReply, result.confidence, result.intent, result.priority, result.summary, result.tier, result.model ?? null],
+    [rfcMessageId, result.needsReply, result.confidence, result.summary, result.tier, result.model ?? null],
   );
 
   return result;

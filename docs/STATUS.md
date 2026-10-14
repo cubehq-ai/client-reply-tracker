@@ -225,31 +225,67 @@ Per CLAUDE.md, with no further input required:
 
 ---
 
-## 7. Matching: how mail is attributed
+## 7. How mail is triaged
 
-Entirely deterministic. No model decides who a client is.
+### Two states
 
-1. Exact sender address → `client_contacts`
-2. A **matching rule** (`match_rules`) — user-authored, see below
-3. Exact sender domain → `client_domains`
-4. Subdomain of a client domain
-5. Any other external participant on the thread
-6. Otherwise: Unmatched
+Every item is `needs_reply` or `no_reply_needed`. A closed item always records
+why: `replied`, `not_needed`, `filtered` or `ignored`. Everything else —
+overdue, unmatched client, low confidence, muted — is a flag on the item, not
+a state, so nothing is in two places at once and the counts never double up.
 
-**Matching rules** (Settings → Matching rules) are the general escape hatch.
-A rule tests one field (sender address, sender domain, subject, body,
-recipient, or a raw header) with regex / contains / equals / ends-with, and
-then assigns a client, filters the mail out, forces it through the filters, or
-sets a priority. They run before the built-in filters and before client
-matching, in `priority` order, and `allow` always beats `ignore`.
+Removed in this revision: snooze, handled-elsewhere, sending, fyi and
+awaiting-client. A reply sent from the dashboard closes the item only when
+sync confirms the sent message, so there is no interim state to get stuck in.
 
-Two things make them safe to use: a rule is **previewed against real stored
-mail** before saving, showing exactly what it would catch and warning if it
-would hide a matched client's mail; and **Apply to existing mail** re-runs the
-rules over the backlog rather than only affecting future messages.
+### Filtering order
 
-Unmatched senders also get **name-based suggestions** (`norbot.ca` → the client
-`Norbot`), offered as one click, never applied automatically.
+Every new external message takes the first branch that matches:
+
+1. **Client mail** — sender domain in `client_domains`, address in
+   `client_contacts`, a subdomain of a client domain, or a matching rule.
+   Gmail's category labels are deliberately ignored here, because client mail
+   lands in Promotions and Updates often enough to matter. Auto-replies,
+   out-of-office and bounces are still dropped by header. Otherwise the
+   classifier runs.
+2. **Spam, promotional, automated** — Gmail SPAM/CATEGORY_* labels,
+   `List-Unsubscribe`, `Precedence: bulk|list`, `Auto-Submitted`,
+   `X-Autoreply`, a noreply-style sender, a calendar part, or an always-ignore
+   rule. Closed as `filtered`, with no model call.
+3. **A real person who is not a client** — if any org mailbox has written to
+   that domain before (or to that exact address, for free providers), the
+   classifier runs and the item is flagged `unmatched_client`. If we have
+   never written to them, it is cold outreach: closed as `filtered`, no model
+   call.
+
+Prior contact is a lookup against `contacted_domains` / `contacted_addresses`,
+built from our own Sent mail during backfill and kept current by sync. This is
+what separates a real correspondent we simply have not linked yet from a cold
+pitch, and it is why the Unmatched queue went from 255 items to 24.
+
+Rebuild it at any time with `npx tsx src/cli.ts backfill-contacts`.
+
+### Classifier
+
+Runs only on branches 1 and 3. A free pre-check closes a message that is under
+200 characters, reads as an acknowledgement, asks no question and contains none
+of "can you / could you / please / need / when / send / share / confirm /
+update". Everything else goes to the model, which answers only
+`{needs_reply, confidence, summary}`. Cached by `rfc_message_id`, so a message
+in five mailboxes is paid for once. Below `NEEDS_REPLY_CONFIDENCE_THRESHOLD`
+the item still appears in Needs reply, flagged `low_confidence` — client mail
+is never hidden on the model's word alone. Every user override is recorded in
+`classifier_feedback`.
+
+### Matching rules
+
+Settings → Matching rules is the general escape hatch: test one field (sender
+address, sender domain, subject, body, recipient, raw header) with regex /
+contains / equals / ends-with, then assign a client, filter it out, force it
+through the filters, or set a priority. Rules run before the built-in filters
+and before client matching, in `priority` order, and `allow` always beats
+`ignore`. A rule is previewed against real stored mail before saving, and
+**Apply to existing mail** re-runs the rules over the backlog.
 
 ---
 

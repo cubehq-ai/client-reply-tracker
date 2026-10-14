@@ -1,15 +1,12 @@
-import type { Classification, ClassificationInput, DraftInput, Intent, LlmClient, Priority } from './types.js';
+import type { Classification, ClassificationInput, DraftInput, LlmClient } from './types.js';
 
-const ACK = new RegExp(`^(thanks(\\s+(so much|a lot|again|a ton))?|thank you(\\s+(so much|very much))?|many thanks|thx|ta|got it|received|noted|perfect|great|awesome|excellent|will do|sounds good|ok(ay)?|understood|appreciate it|cheers|no worries|all good|that works)([\\s,.!;:-]+(thanks(\\s+(so much|a lot|again|a ton))?|thank you(\\s+(so much|very much))?|many thanks|thx|ta|got it|received|noted|perfect|great|awesome|excellent|will do|sounds good|ok(ay)?|understood|appreciate it|cheers|no worries|all good|that works))*[\\s!.,:)]*$`, 'i');
-const QUESTION = /\?|\b(could you|can you|would you|please (send|share|confirm|advise|let)|when (can|will)|what is|how do|any update|following up|any news|waiting (on|for))\b/i;
-const COMPLAINT = /\b(unacceptable|disappointed|frustrated|escalate|still (not|broken|down|failing)|third (day|time)|no update|breach|refund|cancel our)\b/i;
-const URGENT = /\b(urgent|asap|immediately|critical|down|outage|blocked|blocker|today)\b/i;
-const APPROVAL = /\b(approve|approved|sign(ed)? off|lgtm|go ahead|confirm(ed)? the|we agree)\b/i;
+const ACK = /\b(thanks|thank you|thx|got it|received|noted|perfect|great|awesome|will do|sounds good|ok|okay|understood|appreciate it|cheers|no worries|all good)\b/i;
+const ASK = /\?|\b(can you|could you|would you|please|need|when|send|share|confirm|update|advise|let me know|following up|any news|waiting)\b/i;
 
 /**
- * Deterministic stand-in for the LLM. Used in tests and whenever
- * ANTHROPIC_API_KEY is unset, so the pipeline never requires a paid call.
- * It is the same logic as Tier A, extended far enough to be useful offline.
+ * Offline stand-in for the model, used in tests and whenever ANTHROPIC_API_KEY
+ * is unset. It answers the same question but only from keywords, so its
+ * confidence is deliberately low: it is a placeholder, not a judgement.
  */
 export class FakeLlmClient implements LlmClient {
   public calls = 0;
@@ -17,30 +14,26 @@ export class FakeLlmClient implements LlmClient {
   async classify(input: ClassificationInput): Promise<Classification> {
     this.calls += 1;
     const body = input.body.trim();
-    const firstLine = body.split('\n')[0]?.trim() ?? '';
     const haystack = `${input.subject}\n${body}`;
 
-    if (body.length <= 80 && ACK.test(firstLine) && !body.includes('?')) {
-      return { needsReply: false, confidence: 0.82, intent: 'fyi', priority: 'low', summary: `Acknowledgement: ${firstLine.slice(0, 60)}`, tier: 'heuristic' };
+    const asks = ASK.test(haystack);
+    const acknowledges = ACK.test(body) && body.length < 200;
+
+    if (!asks && acknowledges) {
+      return {
+        needsReply: false,
+        confidence: 0.7,
+        summary: body.split('\n')[0]?.slice(0, 120) ?? 'Acknowledgement',
+        tier: 'heuristic',
+      };
     }
 
-    let intent: Intent;
-    let confidence: number;
-    if (COMPLAINT.test(haystack)) { intent = 'complaint'; confidence = 0.8; }
-    else if (QUESTION.test(haystack)) { intent = 'question'; confidence = 0.78; }
-    else if (APPROVAL.test(haystack)) { intent = 'approval'; confidence = 0.7; }
-    else if (body.length < 200) { intent = 'fyi'; confidence = 0.55; }
-    else { intent = 'request'; confidence = 0.6; }
-
-    const priority: Priority = intent === 'complaint' || URGENT.test(haystack) ? 'high' : 'normal';
-    const needsReply = intent !== 'fyi';
-
     return {
-      needsReply,
-      confidence,
-      intent,
-      priority,
-      summary: (input.subject || firstLine).slice(0, 120),
+      needsReply: asks,
+      // Low on purpose: without a model this is a guess, and the UI should
+      // surface it as uncertain rather than confident.
+      confidence: asks ? 0.55 : 0.5,
+      summary: (input.subject || body).slice(0, 120),
       tier: 'heuristic',
     };
   }
@@ -52,7 +45,7 @@ export class FakeLlmClient implements LlmClient {
       '',
       'Thanks for your note — I am looking into this and will come back to you shortly.',
       '',
-      '(This is an offline placeholder draft. Set ANTHROPIC_API_KEY to generate a real one.)',
+      '(Offline placeholder draft. Set ANTHROPIC_API_KEY to generate a real one.)',
     ].join('\n');
   }
 }

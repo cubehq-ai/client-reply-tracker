@@ -4,7 +4,7 @@ import { domainOf } from './normalize.js';
 
 export interface ClientMatch {
   clientId: number | null;
-  matchedOn: 'domain' | 'email' | 'subdomain' | 'pattern' | 'participant' | null;
+  matchedOn: 'domain' | 'email' | 'subdomain' | 'pattern' | 'participant' | 'rule' | null;
   matchedValue: string | null;
 }
 

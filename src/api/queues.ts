@@ -2,10 +2,8 @@ import { query } from '../db/pool.js';
 import { config } from '../lib/config.js';
 import type { SessionUser } from './auth.js';
 
-export type QueueName =
-  | 'inbox'
-  | 'needs_reply' | 'overdue' | 'unmatched' | 'low_confidence' | 'fyi'
-  | 'snoozed' | 'replied' | 'awaiting_client' | 'ignored' | 'filtered' | 'all';
+/** Two tabs (CLAUDE.md override 1). Everything else is a filter. */
+export type QueueName = 'needs_reply' | 'no_reply_needed' | 'all';
 
 export type AgeBucket = '4h' | '24h' | '3d' | 'older';
 
@@ -29,11 +27,12 @@ export interface QueueFilters {
    * 'aged' is past UNRESPONDED_AFTER_HOURS, 'fresh' is still within it.
    */
   freshness?: 'aged' | 'fresh';
-  /** Overlay flags, each narrowing the list rather than replacing it. */
+  /** Why a closed item is closed: replied | not_needed | filtered | ignored. */
+  reasons?: string[];
+  /** Flags on an item, not states. */
   overdue?: boolean;
   unmatched?: boolean;
   lowConfidence?: boolean;
-  awaitingClient?: boolean;
   muted?: boolean;
   limit?: number;
   offset?: number;
@@ -50,21 +49,18 @@ export interface QueueItem {
   clientId: number | null;
   clientName: string | null;
   ownerEmail: string | null;
-  priority: string;
-  intent: string | null;
   summary: string | null;
+  reason: string | null;
   confidence: number | null;
   lowConfidence: boolean;
   lastExternalAt: string | null;
   slaDueAt: string | null;
   overdue: boolean;
-  snoozedUntil: string | null;
   repliedAt: string | null;
   repliedBy: string | null;
   reopenCount: number;
   muted: boolean;
   filterReason: string | null;
-  awaitingClient: boolean;
   fromEmail: string | null;
   fromName: string | null;
   snippet: string | null;
@@ -100,54 +96,20 @@ function visibilityClause(user: SessionUser, view: QueueFilters['view'], params:
   )`;
 }
 
-function queueClause(queue: QueueName, params: unknown[]): string {
+function queueClause(queue: QueueName, _params: unknown[]): string {
   switch (queue) {
-    case 'inbox':
-      // The unified list. Status is a filter applied on top, not a queue.
-      return "i.state <> 'archived'";
-    case 'needs_reply':
-      return "i.state = 'needs_reply' AND i.client_id IS NOT NULL";
-    case 'overdue':
-      return "i.state = 'needs_reply' AND i.sla_due_at IS NOT NULL AND i.sla_due_at < now()";
-    case 'unmatched':
-      return "i.state = 'needs_reply' AND i.client_id IS NULL";
-    case 'low_confidence':
-      params.push(config.classifier.threshold);
-      return `i.state IN ('needs_reply','fyi') AND i.needs_reply_confidence IS NOT NULL AND i.needs_reply_confidence < $${params.length}`;
-    case 'fyi':
-      return "i.state = 'fyi'";
-    case 'snoozed':
-      return "i.state = 'snoozed'";
-    case 'replied':
-      return "i.state = 'replied' AND i.replied_at > now() - interval '7 days'";
-    case 'awaiting_client':
-      return "i.state = 'replied' AND i.awaiting_client = true";
-    case 'ignored':
-      return "i.state = 'ignored' AND i.state_since > now() - interval '30 days'";
-    case 'filtered':
-      return "i.state = 'auto_ignored'";
-    case 'all':
-      return "i.state <> 'archived'";
-    default:
-      return 'TRUE';
+    case 'needs_reply': return "i.state = 'needs_reply'";
+    case 'no_reply_needed': return "i.state = 'no_reply_needed'";
+    default: return 'TRUE';
   }
 }
 
 function orderClause(queue: QueueName): string {
-  switch (queue) {
-    case 'needs_reply':
-      // Priority first, then oldest (SPEC 7).
-      return "CASE i.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END ASC, i.last_external_at ASC NULLS LAST";
-    case 'overdue':
-    case 'awaiting_client':
-      return 'i.last_external_at ASC NULLS LAST';
-    case 'snoozed':
-      return 'i.snoozed_until ASC NULLS LAST';
-    case 'replied':
-      return 'i.replied_at DESC NULLS LAST';
-    default:
-      return 'i.last_external_at DESC NULLS LAST';
+  // Needs reply: overdue first, then oldest first (override 1).
+  if (queue === 'needs_reply') {
+    return `(i.sla_due_at IS NOT NULL AND i.sla_due_at < now()) DESC, i.last_external_at ASC NULLS LAST`;
   }
+  return 'i.state_since DESC NULLS LAST, i.last_external_at DESC NULLS LAST';
 }
 
 function ageClause(age: AgeBucket): string {
@@ -176,8 +138,7 @@ export async function listQueue(
 
   if (filters.clientIds?.length) { params.push(filters.clientIds); where.push(`i.client_id = ANY($${params.length}::bigint[])`); }
   if (filters.ownerUserIds?.length) { params.push(filters.ownerUserIds); where.push(`i.owner_user_id = ANY($${params.length}::bigint[])`); }
-  if (filters.priorities?.length) { params.push(filters.priorities); where.push(`i.priority = ANY($${params.length}::text[])`); }
-  if (filters.intent) { params.push(filters.intent); where.push(`i.intent = $${params.length}`); }
+  if (filters.reasons?.length) { params.push(filters.reasons); where.push(`i.reason = ANY($${params.length}::text[])`); }
   const ages = agesClause(filters.ages);
   if (ages) where.push(ages);
   if (filters.mailbox) {
@@ -203,13 +164,9 @@ export async function listQueue(
     where.push(`i.last_external_at ${op} now() - ($${params.length} || ' hours')::interval`);
   }
   if (filters.overdue) where.push("i.sla_due_at IS NOT NULL AND i.sla_due_at < now() AND i.state = 'needs_reply'");
-  if (filters.unmatched) where.push('i.client_id IS NULL');
-  if (filters.awaitingClient) where.push('i.awaiting_client = true');
+  if (filters.unmatched) where.push('i.unmatched_client = true');
   if (filters.muted) where.push('i.muted = true');
-  if (filters.lowConfidence) {
-    params.push(config.classifier.threshold);
-    where.push(`i.needs_reply_confidence IS NOT NULL AND i.needs_reply_confidence < $${params.length}`);
-  }
+  if (filters.lowConfidence) where.push('i.low_confidence = true');
 
   const limit = Math.min(200, filters.limit ?? 50);
   const offset = filters.offset ?? 0;
@@ -263,21 +220,18 @@ export async function listQueue(
       clientId: r.client_id ? Number(r.client_id) : null,
       clientName: r.client_name,
       ownerEmail: r.owner_email,
-      priority: r.priority,
-      intent: r.intent,
       summary: r.summary,
+      reason: r.reason,
       confidence: r.needs_reply_confidence === null ? null : Number(r.needs_reply_confidence),
-      lowConfidence: r.needs_reply_confidence !== null && Number(r.needs_reply_confidence) < config.classifier.threshold,
+      lowConfidence: Boolean(r.low_confidence),
       lastExternalAt: r.last_external_at?.toISOString?.() ?? null,
       slaDueAt: r.sla_due_at?.toISOString?.() ?? null,
       overdue: Boolean(r.sla_due_at && r.state === 'needs_reply' && r.sla_due_at < new Date()),
-      snoozedUntil: r.snoozed_until?.toISOString?.() ?? null,
       repliedAt: r.replied_at?.toISOString?.() ?? null,
       repliedBy: r.replied_by,
       reopenCount: Number(r.reopen_count ?? 0),
       muted: Boolean(r.muted),
       filterReason: r.filter_reason,
-      awaitingClient: Boolean(r.awaiting_client),
       fromEmail: r.from_email,
       fromName: null,
       snippet: r.snippet,
@@ -288,24 +242,22 @@ export async function listQueue(
   };
 }
 
-/** Counts for the sidebar badges, scoped the same way as the queues. */
+/** Counts for the two tabs, scoped the same way as the lists. */
 export async function queueCounts(user: SessionUser, view: QueueFilters['view'] = 'all'): Promise<Record<string, number>> {
-  const names: QueueName[] = ['needs_reply', 'overdue', 'unmatched', 'low_confidence', 'fyi', 'snoozed', 'replied', 'awaiting_client', 'ignored', 'filtered'];
-  const out: Record<string, number> = {};
-  await Promise.all(
-    names.map(async (name) => {
-      const params: unknown[] = [];
-      const where = [queueClause(name, params), visibilityClause(user, view, params)];
-      const rows = await query<{ n: string }>(
-        `SELECT count(*)::int AS n FROM items i
-           JOIN conversations c ON c.id = i.conversation_id
-           LEFT JOIN clients cl ON cl.id = i.client_id
-          WHERE ${where.join(' AND ')}`,
-        params,
-      );
-      out[name] = Number(rows[0]?.n ?? 0);
-    }),
+  const params: unknown[] = [];
+  const vis = visibilityClause(user, view, params);
+  const rows = await query<{ state: string; n: string }>(
+    `SELECT i.state, count(*)::int AS n
+       FROM items i
+       JOIN conversations c ON c.id = i.conversation_id
+       LEFT JOIN clients cl ON cl.id = i.client_id
+       LEFT JOIN users u ON u.id = i.owner_user_id
+      WHERE ${vis}
+      GROUP BY i.state`,
+    params,
   );
+  const out: Record<string, number> = { needs_reply: 0, no_reply_needed: 0 };
+  for (const r of rows) out[r.state] = Number(r.n);
   return out;
 }
 
@@ -335,43 +287,42 @@ export async function clientOverview(user: SessionUser, view: QueueFilters['view
  * chips rather than sidebar entries: "overdue" is a slice of "needs reply",
  * not a sibling of it.
  */
-export async function inboxFacets(user: SessionUser, filters: QueueFilters = {}): Promise<{
-  status: Record<string, number>;
+export async function inboxFacets(user: SessionUser, filters: QueueFilters = {}, tab: QueueName = 'needs_reply'): Promise<{
+  needsReply: number;
+  noReplyNeeded: number;
+  reasons: Record<string, number>;
   overdue: number;
   unmatched: number;
   lowConfidence: number;
-  awaitingClient: number;
-  /** needs_reply split by the unresponded threshold. */
   notReplied: number;
   fresh: number;
   thresholdHours: number;
   total: number;
 }> {
   const params: unknown[] = [];
-  const where = ["i.state <> 'archived'", visibilityClause(user, filters.view, params)];
+  const where = [visibilityClause(user, filters.view, params)];
 
   if (filters.clientIds?.length) { params.push(filters.clientIds); where.push(`i.client_id = ANY($${params.length}::bigint[])`); }
   if (filters.ownerUserIds?.length) { params.push(filters.ownerUserIds); where.push(`i.owner_user_id = ANY($${params.length}::bigint[])`); }
   if (filters.teamIds?.length) { params.push(filters.teamIds); where.push(`u.team_id = ANY($${params.length}::bigint[])`); }
-  if (filters.priorities?.length) { params.push(filters.priorities); where.push(`i.priority = ANY($${params.length}::text[])`); }
-  if (filters.intent) { params.push(filters.intent); where.push(`i.intent = $${params.length}`); }
   if (filters.source) { params.push(filters.source); where.push(`i.source = $${params.length}`); }
+  if (filters.search) { params.push(`%${filters.search}%`); where.push(`(c.subject ILIKE $${params.length} OR i.summary ILIKE $${params.length})`); }
   const ageFacet = agesClause(filters.ages);
   if (ageFacet) where.push(ageFacet);
-  if (filters.search) { params.push(`%${filters.search}%`); where.push(`(c.subject ILIKE $${params.length} OR i.summary ILIKE $${params.length})`); }
 
-  params.push(config.classifier.threshold);
-  const thresholdIdx = params.length;
   params.push(String(config.org.unrespondedAfterHours));
   const agedIdx = params.length;
 
+  // Flag counts are scoped to the tab being viewed, or they would describe
+  // items the list cannot show.
+  const tabFilter = tab === 'no_reply_needed' ? "i.state = 'no_reply_needed'" : "i.state = 'needs_reply'";
+
   const rows = await query<any>(
-    `SELECT i.state,
+    `SELECT i.state, i.reason,
             count(*)::int AS n,
             count(*) FILTER (WHERE i.sla_due_at IS NOT NULL AND i.sla_due_at < now() AND i.state = 'needs_reply')::int AS overdue,
-            count(*) FILTER (WHERE i.client_id IS NULL)::int AS unmatched,
-            count(*) FILTER (WHERE i.needs_reply_confidence IS NOT NULL AND i.needs_reply_confidence < $${thresholdIdx})::int AS low_conf,
-            count(*) FILTER (WHERE i.awaiting_client)::int AS awaiting,
+            count(*) FILTER (WHERE i.unmatched_client AND ${tabFilter})::int AS unmatched,
+            count(*) FILTER (WHERE i.low_confidence AND ${tabFilter})::int AS low_conf,
             count(*) FILTER (WHERE i.state = 'needs_reply'
               AND i.last_external_at <= now() - ($${agedIdx} || ' hours')::interval)::int AS aged,
             count(*) FILTER (WHERE i.state = 'needs_reply'
@@ -381,25 +332,27 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {})
        LEFT JOIN clients cl ON cl.id = i.client_id
        LEFT JOIN users u ON u.id = i.owner_user_id
       WHERE ${where.join(' AND ')}
-      GROUP BY i.state`,
+      GROUP BY i.state, i.reason`,
     params,
   );
 
-  const status: Record<string, number> = {};
-  let overdue = 0, unmatched = 0, lowConfidence = 0, awaitingClient = 0, total = 0, notReplied = 0, fresh = 0;
+  const reasons: Record<string, number> = {};
+  let needsReply = 0, noReplyNeeded = 0, overdue = 0, unmatched = 0, lowConfidence = 0, notReplied = 0, fresh = 0;
   for (const r of rows) {
-    status[r.state] = Number(r.n);
-    total += Number(r.n);
+    const n = Number(r.n);
+    if (r.state === 'needs_reply') needsReply += n; else noReplyNeeded += n;
+    if (r.reason) reasons[r.reason] = (reasons[r.reason] ?? 0) + n;
     overdue += Number(r.overdue);
     unmatched += Number(r.unmatched);
     lowConfidence += Number(r.low_conf);
-    awaitingClient += Number(r.awaiting);
     notReplied += Number(r.aged);
     fresh += Number(r.fresh);
   }
+
   return {
-    status, overdue, unmatched, lowConfidence, awaitingClient,
-    notReplied, fresh, thresholdHours: config.org.unrespondedAfterHours, total,
+    needsReply, noReplyNeeded, reasons, overdue, unmatched, lowConfidence,
+    notReplied, fresh, thresholdHours: config.org.unrespondedAfterHours,
+    total: needsReply + noReplyNeeded,
   };
 }
 

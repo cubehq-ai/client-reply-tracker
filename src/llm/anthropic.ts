@@ -1,23 +1,24 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
-import type { Classification, ClassificationInput, DraftInput, Intent, LlmClient, Priority } from './types.js';
+import type { Classification, ClassificationInput, DraftInput, LlmClient } from './types.js';
 
-const CLASSIFY_SYSTEM = `You triage a B2B company's client email.
-Decide whether the latest message from the client needs a reply from us.
+const CLASSIFY_SYSTEM = `You triage a B2B agency's incoming email.
 
-Rules:
-- "needs_reply" is true when the sender asks a question, makes a request, reports a problem, or is waiting on something from us.
-- "needs_reply" is false for acknowledgements ("Thanks!", "Got it"), FYI notices, automated reports and invoices that ask for nothing.
-- Judge only the latest external message. Earlier context is background.
+Question to answer: does the sender's latest message ask a question, make a
+request, raise a problem, or otherwise expect a response from us, taking our
+last message into account?
+
+- true when they are waiting on something from us.
+- false for acknowledgements ("Thanks!", "Noted"), FYI notices, and automated
+  reports or invoices that ask for nothing.
+- Judge the latest message from them. Our last message is context for whether
+  they are still waiting.
 - confidence is your own certainty, 0 to 1.
-- summary is one short line in English, whatever the language of the email.
+- summary is one short line in English, whatever language the mail is in.
 
 Reply with JSON only, no prose, matching exactly:
-{"needs_reply": boolean, "confidence": number, "intent": "question"|"request"|"complaint"|"approval"|"fyi"|"other", "priority": "high"|"normal"|"low", "summary": string}`;
-
-const INTENTS = new Set<Intent>(['question', 'request', 'complaint', 'approval', 'fyi', 'other']);
-const PRIORITIES = new Set<Priority>(['high', 'normal', 'low']);
+{"needs_reply": boolean, "confidence": number, "summary": string}`;
 
 export class AnthropicLlmClient implements LlmClient {
   private client: Anthropic;
@@ -44,14 +45,13 @@ export class AnthropicLlmClient implements LlmClient {
     const text = res.content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('');
     const parsed = parseJson(text);
     if (!parsed) {
-      logger.warn({ text: text.slice(0, 200) }, 'classifier returned unparseable JSON; falling back to needs_reply');
-      return { needsReply: true, confidence: 0.3, intent: 'other', priority: 'normal', summary: input.subject.slice(0, 120), tier: 'fallback' };
+      // Failing open keeps client mail visible; failing closed would hide it.
+      logger.warn({ text: text.slice(0, 200) }, 'classifier returned unparseable JSON; treating as needs reply');
+      return { needsReply: true, confidence: 0.3, summary: input.subject.slice(0, 120), tier: 'fallback' };
     }
     return {
       needsReply: Boolean(parsed.needs_reply),
       confidence: clamp(Number(parsed.confidence)),
-      intent: INTENTS.has(parsed.intent) ? parsed.intent : 'other',
-      priority: PRIORITIES.has(parsed.priority) ? parsed.priority : 'normal',
       summary: String(parsed.summary ?? '').slice(0, 300),
       tier: 'llm',
       model: config.classifier.model,

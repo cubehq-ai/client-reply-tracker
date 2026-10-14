@@ -1,6 +1,3 @@
-export type Intent = 'question' | 'request' | 'complaint' | 'approval' | 'fyi' | 'other';
-export type Priority = 'high' | 'normal' | 'low';
-
 export interface ClassificationInput {
   subject: string;
   /** Cleaned body of the latest external message. */
@@ -14,8 +11,6 @@ export interface ClassificationInput {
 export interface Classification {
   needsReply: boolean;
   confidence: number;
-  intent: Intent;
-  priority: Priority;
   summary: string;
   /** Which tier produced this verdict, for cost accounting and audit. */
   tier: 'heuristic' | 'llm' | 'fallback';

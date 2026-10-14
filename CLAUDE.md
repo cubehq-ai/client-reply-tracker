@@ -72,3 +72,73 @@ approach. Mirror what is needed into this tool's own database instead.
 
 ## Finish
 - Write `docs/STATUS.md`: what was built, how to run it locally, how to switch from fakes to real Google access (exact env vars and steps), test results, and a list of remaining items for the human.
+
+## Overrides to SPEC (these take priority over docs/SPEC.md)
+
+### 1. Item states — two only
+Replaces SPEC §5 (state machine) and §7 (queues).
+
+- Every item is in exactly one state: `needs_reply` or `no_reply_needed`.
+- `no_reply_needed` items store a `reason`:
+  - `replied`: an internal reply was detected after the last external message
+  - `not_needed`: classifier or user decided no reply is needed (e.g. "Thanks", "Noted")
+  - `filtered`: spam, promotional, bulk, automated, or non-client mail with no prior contact
+  - `ignored`: user clicked Ignore
+- Extra fields on items (not states):
+  - `low_confidence` (bool): classifier confidence < 0.6
+  - `unmatched_client` (bool): sender not linked to any client
+  - `muted` (bool): user chose "Mute thread"
+  - `overdue` (bool): computed from SLA
+
+Transitions:
+| Event | Result |
+|---|---|
+| New external message, classified needs reply | `needs_reply` (from any state, unless `muted = true`) |
+| New external message, classified no reply needed | `no_reply_needed`, reason `not_needed` |
+| Internal reply detected (any org mailbox, at least one external participant as recipient) | `no_reply_needed`, reason `replied` |
+| User clicks "No reply needed" | `no_reply_needed`, reason `not_needed`; log feedback for classifier |
+| User clicks Ignore | `no_reply_needed`, reason `ignored`; sub-options: this message / mute thread / always ignore sender / always ignore domain |
+| User clicks "Needs reply" on any no_reply_needed item | `needs_reply`; log feedback for classifier |
+| Classifier unsure (confidence < 0.6) | `needs_reply` with `low_confidence = true` |
+
+Removed entirely: snooze, handled_elsewhere, sending, fyi, awaiting_client states and their queues. Sending a reply from the dashboard sets the item to `no_reply_needed` / `replied` only after sync confirms the sent message.
+
+UI:
+- Two tabs: **Needs reply** and **No reply needed**.
+- Filters on both tabs: client, owner, age bucket, reason, low confidence, unmatched client, overdue.
+- Needs reply sort: overdue first, then oldest first.
+- Unmatched items have a "Link to client" action (creates a client_domains or client_contacts mapping, then re-runs matching on all open items from that sender/domain) and a "Not a client" action (sets `no_reply_needed`, reason `ignored`, optional always-ignore rule).
+
+### 2. Mail filtering order
+Replaces SPEC §4 steps 3–5. For every new external message, stop at the first match:
+
+1. **Client mail**: sender domain in `client_domains`, or sender email in `client_contacts` (subdomains match parent domain; free email domains like gmail.com/outlook.com/yahoo.com match only via `client_contacts`).
+   - Skip Gmail label filters (client mail can land in Promotions/Updates).
+   - Still drop auto-replies, out-of-office and bounces by header → `no_reply_needed`, reason `filtered`.
+   - Otherwise run the needs-reply classifier.
+2. **Spam / promotional / automated**: any of
+   - Gmail label `SPAM`, `CATEGORY_PROMOTIONS`, `CATEGORY_SOCIAL`, `CATEGORY_UPDATES`, `CATEGORY_FORUMS`
+   - Header `List-Unsubscribe`, `Precedence: bulk|list`, `Auto-Submitted` (not `no`), `X-Autoreply`
+   - Sender local part matches noreply, no-reply, donotreply, notifications, notification, mailer-daemon, postmaster, bounce
+   - Calendar invite or response (`text/calendar` part)
+   - Sender or domain on the always-ignore list
+   → `no_reply_needed`, reason `filtered`. No LLM call.
+3. **Non-client mail from a real person**:
+   - If any org mailbox has previously sent at least one email to the sender's domain (or to the sender's exact address for free email domains) → run the needs-reply classifier; if it needs a reply → `needs_reply` with `unmatched_client = true`.
+   - Otherwise → `no_reply_needed`, reason `filtered`. No LLM call.
+   - Maintain a `contacted_domains` table (domain, first_sent_at, last_sent_at) built from org Sent mail during backfill and kept updated by sync, so this check is a DB lookup.
+
+### 3. Needs-reply classifier
+- Runs only on step 1 messages and step 3 messages that passed the prior-contact check.
+- Input: subject, cleaned body of the latest external message (quoted text and signatures removed), and cleaned body of the latest internal message in the conversation.
+- Cheap rule before the LLM: body under 200 characters, matches a thanks/acknowledgment pattern, no `?`, and none of "can you", "could you", "please", "need", "when", "send", "share", "confirm", "update" → no reply needed, confidence 0.9, no LLM call.
+- LLM: small/cheap model. Output strict JSON only:
+  `{"needs_reply": true|false, "confidence": 0.0-1.0, "summary": "one line"}`
+- Prompt must ask: does the client's latest message ask a question, make a request, raise a problem, or otherwise expect a response from us, taking our last message into account?
+- Cache by `rfc_message_id`. Classify once per message, not per mailbox copy.
+- Store every user override ("Needs reply" / "No reply needed" clicks) in `classifier_feedback`.
+
+### 4. Data model changes
+- `items`: replace `state` enum with `needs_reply | no_reply_needed`; add `reason`, `low_confidence`, `unmatched_client`, `muted`; drop `snoozed_until`, `intent`, `awaiting_client`, `priority`.
+- Add table `contacted_domains(domain PK, first_sent_at, last_sent_at, is_free_email_domain)` and `contacted_addresses(email PK, first_sent_at, last_sent_at)` for free email domains.
+- Add tests with fixtures for each filtering branch: client in Promotions (kept), newsletter (filtered), cold outreach from never-contacted domain (filtered), new person from previously contacted domain (unmatched, needs_reply), client "Thanks!" (not_needed), client question after our reply (needs_reply), client reply on muted thread (stays no_reply_needed).

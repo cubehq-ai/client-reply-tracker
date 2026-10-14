@@ -62,10 +62,24 @@ const inbox = await page.evaluate(() => ({
   filters: [...document.querySelectorAll('.multiselect-trigger')].map((e) => e.textContent.replace(/\d+$/, '').trim()),
   searchWidth: Math.round(document.querySelector('.toolbar-search')?.getBoundingClientRect().width ?? 0),
   tabs: [...document.querySelectorAll('.tab')].map((t) => t.textContent.trim()),
+  stateTabs: [...document.querySelectorAll('.state-tabs .tab')].map((t) => t.textContent.replace(/\d+$/, '').trim()),
 }));
-note(inbox.filters.join(',') === 'Client,Team,Recipient,Age,Priority', `filters are ${inbox.filters.join(', ')}`);
+note(inbox.filters.join(',') === 'Client,Team,Recipient,Age', `filters are ${inbox.filters.join(', ')}`);
 note(inbox.searchWidth > 400, `search field is ${inbox.searchWidth}px wide`);
 note(!inbox.tabs.some((t) => /whatsapp/i.test(t)), 'no WhatsApp tab');
+note(inbox.stateTabs.join(',') === 'Needs reply,No reply needed', `state tabs are ${inbox.stateTabs.join(', ')}`);
+
+// The second tab must list its own items and its reason chips.
+await page.locator('.state-tabs .tab', { hasText: 'No reply needed' }).click();
+await page.waitForTimeout(1800);
+const closed = await page.evaluate(() => ({
+  rows: document.querySelectorAll('.row').length,
+  chips: [...document.querySelectorAll('.chips .chip')].map((c) => c.textContent.replace(/\d+$/, '').trim()),
+}));
+note(closed.rows > 0, `no-reply-needed tab lists ${closed.rows} items`);
+note(['Replied', 'No reply needed', 'Filtered', 'Ignored'].every((r) => closed.chips.includes(r)), `reason chips ${JSON.stringify(closed.chips)}`);
+await page.locator('.state-tabs .tab', { hasText: 'Needs reply' }).click();
+await page.waitForTimeout(1500);
 
 console.log('\nThread');
 if (inbox.rows > 0) {

@@ -501,3 +501,14 @@ td > input[type="text"] { display: inline-block; }
   font-size: 13px;
 }
 .rule-preview table { background: var(--panel); border-radius: 6px; }
+
+/* The two item states read as tabs; everything else is a chip below them. */
+.state-tabs { border-bottom: none; margin-bottom: 10px; gap: 6px; }
+.state-tabs .tab {
+  border: 1px solid var(--border); border-radius: 7px; padding: 6px 14px;
+  margin-bottom: 0; font-size: 13.5px;
+}
+.state-tabs .tab.active {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.tab-n { font-variant-numeric: tabular-nums; opacity: .75; margin-left: 5px; font-size: 12px; }
