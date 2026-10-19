@@ -43,11 +43,14 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
   const [adding, setAdding] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
 
-  const [unwatched, setUnwatched] = useState<any[]>([]);
+  const [newPeople, setNewPeople] = useState<any[]>([]);
+  /** Which new person has the team picker open. */
+  const [picking, setPicking] = useState<string | null>(null);
+  const [pickTeam, setPickTeam] = useState('');
 
   const load = () => Promise.all([
     api.settingsMailboxes().then(setData),
-    api.unwatched().then((r) => setUnwatched(r.people ?? [])).catch(() => setUnwatched([])),
+    api.newPeople().then((r) => setNewPeople(r.people ?? [])).catch(() => setNewPeople([])),
   ]).catch((e) => setError(e.message));
   useEffect(() => { void load(); }, []);
 
@@ -75,35 +78,65 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
       {notice && <div className="banner info">{notice}</div>}
       {error && <div className="banner danger">{error}</div>}
 
-      {unwatched.length > 0 && (
+      {newPeople.length > 0 && (
         <div className="card" style={{ marginBottom: 14 }}>
           <div className="section-title">
-            <span>
-              In the dashboard, not being watched <span className="muted">· {unwatched.length}</span>
-            </span>
-            <button className="btn small" onClick={() => act(async () => {
-              const res = await api.settingsPost('mailboxes', { emails: unwatched.map((p) => p.email) });
-              setNotice(`Added ${res.added?.length ?? 0} mailbox(es).`);
-            }, 'Added to the watch list.')}>
-              Add all
-            </button>
+            <span>Recently added <span className="muted">· in the dashboard, not yet watched</span></span>
           </div>
           <div className="muted" style={{ padding: '10px 14px 0', fontSize: 12.5 }}>
-            New people appear here rather than being watched automatically — reading someone's
-            mailbox should be a decision, not a side effect of a sync.
+            People who appeared in the dashboard in the last two weeks. Adding one starts reading
+            that mailbox, so it is a choice rather than something a sync does on its own. Rows
+            disappear after two weeks whether or not they are added.
           </div>
           <table>
-            <thead><tr><th>Person</th><th>Role</th><th></th></tr></thead>
+            <thead><tr><th>Person</th><th>Role</th><th>Appeared</th><th></th></tr></thead>
             <tbody>
-              {unwatched.map((p) => (
+              {newPeople.map((p) => (
                 <tr key={p.email}>
                   <td className="mono">{p.email}{p.name ? ` · ${p.name}` : ''}</td>
                   <td>{p.role ?? '—'}</td>
+                  <td className="muted">{timeAgo(p.firstSeenAt)}</td>
                   <td>
-                    <button className="btn small" onClick={() => act(
-                      () => api.settingsPost('mailboxes', { email: p.email, team: p.role }),
-                      `${p.email} added.`,
-                    )}>Watch</button>
+                    {picking === p.email ? (
+                      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                        <select
+                          value={pickTeam}
+                          autoFocus
+                          onChange={(e) => setPickTeam(e.target.value)}
+                        >
+                          <option value="">Choose team…</option>
+                          {data.teams.map((t: any) => <option key={t.id} value={t.name}>{t.name}</option>)}
+                          {p.role && !data.teams.some((t: any) => t.name === p.role) && (
+                            <option value={p.role}>{p.role} (new team)</option>
+                          )}
+                        </select>
+                        <button
+                          className="btn small primary"
+                          disabled={!pickTeam}
+                          onClick={() => act(
+                            () => api.settingsPost('mailboxes', { email: p.email, team: pickTeam }),
+                            `${p.email} added to ${pickTeam}.`,
+                          ).then(() => { setPicking(null); setPickTeam(''); })}
+                        >
+                          Confirm
+                        </button>
+                        <button className="btn small" onClick={() => { setPicking(null); setPickTeam(''); }}>Cancel</button>
+                      </span>
+                    ) : (
+                      <>
+                        <button className="btn small" onClick={() => { setPicking(p.email); setPickTeam(p.role ?? ''); }}>
+                          Add
+                        </button>
+                        <button
+                          className="btn small"
+                          style={{ marginLeft: 6 }}
+                          title="Hide this row without watching the mailbox"
+                          onClick={() => act(() => api.settingsPost('new-people/dismiss', { email: p.email }), 'Dismissed.')}
+                        >
+                          Dismiss
+                        </button>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -121,7 +154,7 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
             </button>
             <button className="btn small" onClick={() => act(async () => {
               const r = await api.settingsPost('sync-teams');
-              setNotice(`Teams synced: ${r.assigned} mailbox(es) assigned, ${r.notWatched?.length ?? 0} not watched.`);
+              setNotice(`Teams synced: ${r.assigned} mailbox(es) assigned, ${r.newPeople?.length ?? 0} newly seen.`);
             }, 'Teams synced from the dashboard.')}>
               Sync from dashboard
             </button>

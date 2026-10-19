@@ -208,8 +208,8 @@ export async function markChurnedClients(): Promise<number> {
 export interface TeamSyncStats {
   teams: string[];
   assigned: number;
-  /** Active people in the dashboard who are not on the watch list. */
-  notWatched: { email: string; name: string | null; role: string | null }[];
+  /** Newly seen people, within the prompt window and not yet watched. */
+  newPeople: NewPerson[];
   /** Watched mailboxes whose person is no longer active in the dashboard. */
   paused: string[];
 }
@@ -221,16 +221,73 @@ interface MongoMember {
   is_active?: boolean;
 }
 
-/** People in the dashboard who are not being watched, for the Settings list. */
-export async function listUnwatchedEmployees(): Promise<TeamSyncStats['notWatched']> {
-  const members = await withInternalDb(async (db) => db.collection('team_members').find<MongoMember>({}, 1000));
-  const watched = new Set(
-    (await query<{ email: string }>('SELECT email FROM mailboxes')).map((r) => r.email.toLowerCase()),
+/** How long a newly seen person stays on the Settings prompt. */
+export const NEW_PERSON_WINDOW_DAYS = 14;
+
+/**
+ * Records everyone currently in the dashboard, so later runs can tell a new
+ * joiner from the standing backlog.
+ *
+ * On the very first run everybody would look new, which is noise rather than a
+ * prompt, so the initial population is backdated past the window.
+ */
+async function recordPeopleSeen(members: MongoMember[]): Promise<void> {
+  const active = members.filter((m) => m.email && m.is_active !== false);
+  if (active.length === 0) return;
+
+  const existing = await query<{ n: string }>('SELECT count(*)::int AS n FROM internal_people_seen');
+  const firstRun = Number(existing[0]?.n ?? 0) === 0;
+
+  for (const m of active) {
+    await query(
+      `INSERT INTO internal_people_seen (email, name, role, first_seen_at, last_seen_at)
+       VALUES ($1,$2,$3, now() - ($4 || ' days')::interval, now())
+       ON CONFLICT (email) DO UPDATE SET
+         name = EXCLUDED.name,
+         role = EXCLUDED.role,
+         last_seen_at = now()`,
+      [
+        m.email!.trim().toLowerCase(),
+        m.name ?? null,
+        (m.role ?? '').trim() || null,
+        firstRun ? String(NEW_PERSON_WINDOW_DAYS + 1) : '0',
+      ],
+    );
+  }
+}
+
+export interface NewPerson {
+  email: string;
+  name: string | null;
+  role: string | null;
+  firstSeenAt: string;
+}
+
+/**
+ * People who appeared in the dashboard within the window and are not being
+ * watched. Rows age out on their own, so an ignored prompt does not become a
+ * permanent list nobody reads.
+ */
+export async function listNewPeople(): Promise<NewPerson[]> {
+  const rows = await query<{ email: string; name: string | null; role: string | null; first_seen_at: Date }>(
+    `SELECT p.email, p.name, p.role, p.first_seen_at
+       FROM internal_people_seen p
+      WHERE p.dismissed_at IS NULL
+        AND p.first_seen_at > now() - ($1 || ' days')::interval
+        AND NOT EXISTS (SELECT 1 FROM mailboxes mb WHERE mb.email = p.email)
+      ORDER BY p.first_seen_at DESC, p.email`,
+    [String(NEW_PERSON_WINDOW_DAYS)],
   );
-  return members
-    .filter((m) => m.email && m.is_active !== false && !watched.has(m.email.trim().toLowerCase()))
-    .map((m) => ({ email: m.email!.trim().toLowerCase(), name: m.name ?? null, role: (m.role ?? '').trim() || null }))
-    .sort((a, b) => (a.role ?? '').localeCompare(b.role ?? '') || a.email.localeCompare(b.email));
+  return rows.map((r) => ({
+    email: r.email,
+    name: r.name,
+    role: r.role,
+    firstSeenAt: r.first_seen_at.toISOString(),
+  }));
+}
+
+export async function dismissNewPerson(email: string): Promise<void> {
+  await query('UPDATE internal_people_seen SET dismissed_at = now() WHERE email = $1', [email.toLowerCase()]);
 }
 
 /**
@@ -243,13 +300,15 @@ export async function listUnwatchedEmployees(): Promise<TeamSyncStats['notWatche
 export async function syncTeamsFromInternal(): Promise<TeamSyncStats> {
   const members = await withInternalDb(async (db) => db.collection('team_members').find<MongoMember>({}, 1000));
 
+  await recordPeopleSeen(members);
+
   const watched = new Set(
     (await query<{ email: string }>("SELECT email FROM mailboxes WHERE status <> 'excluded'")).map((r) => r.email.toLowerCase()),
   );
 
   const teamIds = new Map<string, number>();
   let assigned = 0;
-  const notWatched: TeamSyncStats['notWatched'] = [];
+
   const activeInDashboard = new Set<string>();
 
   for (const m of members) {
@@ -259,9 +318,7 @@ export async function syncTeamsFromInternal(): Promise<TeamSyncStats> {
     if (m.is_active !== false) activeInDashboard.add(email);
 
     if (!watched.has(email)) {
-      // A new joiner is surfaced, never auto-watched: reading someone's mail
-      // is a decision for an admin, not a side effect of a sync.
-      if (m.is_active !== false) notWatched.push({ email, name: m.name ?? null, role: role || null });
+      // A new joiner is surfaced for an admin to add, never auto-watched.
       continue;
     }
     if (!role) continue;
@@ -293,8 +350,8 @@ export async function syncTeamsFromInternal(): Promise<TeamSyncStats> {
   }
 
   logger.info(
-    { teams: teamIds.size, assigned, notWatched: notWatched.length, paused: paused.length },
+    { teams: teamIds.size, assigned, paused: paused.length },
     'team sync from internal dashboard complete',
   );
-  return { teams: [...teamIds.keys()], assigned, notWatched, paused };
+  return { teams: [...teamIds.keys()], assigned, newPeople: await listNewPeople(), paused };
 }
