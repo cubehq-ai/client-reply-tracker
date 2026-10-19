@@ -550,3 +550,10 @@ td > input[type="text"] { display: inline-block; }
   -webkit-mask-image: linear-gradient(180deg, #000 78%, transparent);
   mask-image: linear-gradient(180deg, #000 78%, transparent);
 }
+
+/* An expanded message collapses from its header, the same gesture that
+   expands a collapsed one. */
+.msg-head-toggle { cursor: pointer; }
+.msg-head-toggle:hover { background: var(--panel-2); }
+.msg.out .msg-head-toggle:hover { background: rgba(128, 128, 128, .08); }
+.msg-head-who, .msg-head-actions { cursor: auto; }

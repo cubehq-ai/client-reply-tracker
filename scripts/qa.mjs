@@ -25,7 +25,7 @@ const note = (ok, label) => {
   if (!ok) failures.push(label);
 };
 
-const browser = await chromium.launch({ channel: 'chrome' });
+const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1680, height: 950 } });
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(String(e).slice(0, 160)));
@@ -97,6 +97,30 @@ if (inbox.rows > 0) {
   note(t.resizable, 'drawer has a resize handle');
   note(t.addrLabels.every((l) => ['To', 'Cc', 'Bcc'].includes(l)), `address labels ${JSON.stringify([...new Set(t.addrLabels)])}`);
   await page.screenshot({ path: `${OUT}/thread.png` });
+
+  // Expanding and collapsing use the same gesture, and the header's own
+  // buttons must still work rather than toggling the message.
+  const counts = () => page.evaluate(() => ({
+    expanded: document.querySelectorAll('.msg').length,
+    collapsed: document.querySelectorAll('.msg-collapsed').length,
+  }));
+  const before = await counts();
+  await page.locator('.msg-head-toggle').first().click();
+  await page.waitForTimeout(400);
+  const collapsed = await counts();
+  note(collapsed.expanded === before.expanded - 1, 'clicking a message header collapses it');
+
+  await page.locator('.msg-collapsed').last().click();
+  await page.waitForTimeout(400);
+  const reopened = await counts();
+  note(reopened.expanded === before.expanded, 'clicking a collapsed row expands it again');
+
+  await page.locator('.msg-head-actions .btn', { hasText: 'Reply' }).first().click();
+  await page.waitForTimeout(600);
+  const afterReply = await counts();
+  const composerOpen = await page.evaluate(() => !!document.querySelector('.composer-card'));
+  note(afterReply.expanded === before.expanded && composerOpen, 'Reply in the header opens the composer without collapsing');
+  await page.keyboard.press('Escape');
   await page.locator('.drawer-head .btn', { hasText: 'Close' }).click();
   await page.waitForTimeout(600);
 } else {

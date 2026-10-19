@@ -64,7 +64,9 @@ export function Message({ message, open, onToggle, onReply, onReplyAll }: {
 
   return (
     <div className={`msg ${message.direction === 'out' ? 'out' : ''}`}>
-      <div className="msg-head">
+      {/* The whole header toggles, mirroring how a collapsed row expands.
+          The action buttons stop the event so they still do their own job. */}
+      <div className="msg-head msg-head-toggle" onClick={onToggle} title="Collapse">
         <span className="msg-head-who">
           <div>
             <strong>{message.from}</strong>
@@ -75,7 +77,7 @@ export function Message({ message, open, onToggle, onReply, onReplyAll }: {
           {cc.length > 0 && <div className="addr-line"><span className="addr-label">Cc</span>{cc.join(', ')}</div>}
           {bcc.length > 0 && <div className="addr-line"><span className="addr-label">Bcc</span>{bcc.join(', ')}</div>}
         </span>
-        <span className="msg-head-actions">
+        <span className="msg-head-actions" onClick={(e) => e.stopPropagation()}>
           <span className="muted">{when.toLocaleString()}</span>
           <button className="btn small" onClick={onReply} title="Reply to this message">Reply</button>
           {replyAllCount > 1 && (
