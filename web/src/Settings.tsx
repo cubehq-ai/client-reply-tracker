@@ -43,7 +43,12 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
   const [adding, setAdding] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
 
-  const load = () => api.settingsMailboxes().then(setData).catch((e) => setError(e.message));
+  const [unwatched, setUnwatched] = useState<any[]>([]);
+
+  const load = () => Promise.all([
+    api.settingsMailboxes().then(setData),
+    api.unwatched().then((r) => setUnwatched(r.people ?? [])).catch(() => setUnwatched([])),
+  ]).catch((e) => setError(e.message));
   useEffect(() => { void load(); }, []);
 
   async function act(fn: () => Promise<any>, msg: string) {
@@ -70,12 +75,55 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
       {notice && <div className="banner info">{notice}</div>}
       {error && <div className="banner danger">{error}</div>}
 
+      {unwatched.length > 0 && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="section-title">
+            <span>
+              In the dashboard, not being watched <span className="muted">· {unwatched.length}</span>
+            </span>
+            <button className="btn small" onClick={() => act(async () => {
+              const res = await api.settingsPost('mailboxes', { emails: unwatched.map((p) => p.email) });
+              setNotice(`Added ${res.added?.length ?? 0} mailbox(es).`);
+            }, 'Added to the watch list.')}>
+              Add all
+            </button>
+          </div>
+          <div className="muted" style={{ padding: '10px 14px 0', fontSize: 12.5 }}>
+            New people appear here rather than being watched automatically — reading someone's
+            mailbox should be a decision, not a side effect of a sync.
+          </div>
+          <table>
+            <thead><tr><th>Person</th><th>Role</th><th></th></tr></thead>
+            <tbody>
+              {unwatched.map((p) => (
+                <tr key={p.email}>
+                  <td className="mono">{p.email}{p.name ? ` · ${p.name}` : ''}</td>
+                  <td>{p.role ?? '—'}</td>
+                  <td>
+                    <button className="btn small" onClick={() => act(
+                      () => api.settingsPost('mailboxes', { email: p.email, team: p.role }),
+                      `${p.email} added.`,
+                    )}>Watch</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="section-title">
           <span>Teams</span>
           <span className="section-actions">
             <button className="btn small" onClick={() => { setAdding(adding === '__team' ? null : '__team'); setDraft(''); }}>
               {adding === '__team' ? 'Cancel' : '+ Add team'}
+            </button>
+            <button className="btn small" onClick={() => act(async () => {
+              const r = await api.settingsPost('sync-teams');
+              setNotice(`Teams synced: ${r.assigned} mailbox(es) assigned, ${r.notWatched?.length ?? 0} not watched.`);
+            }, 'Teams synced from the dashboard.')}>
+              Sync from dashboard
             </button>
           </span>
         </div>

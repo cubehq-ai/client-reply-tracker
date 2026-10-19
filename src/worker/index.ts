@@ -4,6 +4,7 @@ import { config } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { isEntrypoint } from '../lib/main.js';
 import { syncClients } from '../sync/clients.js';
+import { syncTeamsFromInternal } from '../sync/internalSync.js';
 import { sendDailyDigests, sendImmediateAlerts } from '../sync/digest.js';
 import { discoverMailboxes } from '../sync/discovery.js';
 import { syncAllMailboxes } from '../sync/mailboxSync.js';
@@ -55,6 +56,11 @@ export function startWorker(): void {
 
   // Client + domain sync from the dashboard DB (SPEC 10).
   cron.schedule('*/15 * * * *', guarded('sync-clients', () => syncClients()), { timezone: tz });
+
+  // Teams and membership from the same dashboard, once a day before the
+  // working day starts. People join, leave or change team rarely, and the
+  // Settings page can sync on demand when something needs picking up sooner.
+  cron.schedule('0 6 * * *', guarded('sync-teams', () => syncTeamsFromInternal()), { timezone: tz });
 
   // Short sweep: drop expired composer locks and send overdue alerts.
   cron.schedule('*/5 * * * *', guarded('sweeps', async () => ({

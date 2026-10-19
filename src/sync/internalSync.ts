@@ -208,7 +208,10 @@ export async function markChurnedClients(): Promise<number> {
 export interface TeamSyncStats {
   teams: string[];
   assigned: number;
-  unknownMailboxes: string[];
+  /** Active people in the dashboard who are not on the watch list. */
+  notWatched: { email: string; name: string | null; role: string | null }[];
+  /** Watched mailboxes whose person is no longer active in the dashboard. */
+  paused: string[];
 }
 
 interface MongoMember {
@@ -216,6 +219,18 @@ interface MongoMember {
   name?: string;
   role?: string;
   is_active?: boolean;
+}
+
+/** People in the dashboard who are not being watched, for the Settings list. */
+export async function listUnwatchedEmployees(): Promise<TeamSyncStats['notWatched']> {
+  const members = await withInternalDb(async (db) => db.collection('team_members').find<MongoMember>({}, 1000));
+  const watched = new Set(
+    (await query<{ email: string }>('SELECT email FROM mailboxes')).map((r) => r.email.toLowerCase()),
+  );
+  return members
+    .filter((m) => m.email && m.is_active !== false && !watched.has(m.email.trim().toLowerCase()))
+    .map((m) => ({ email: m.email!.trim().toLowerCase(), name: m.name ?? null, role: (m.role ?? '').trim() || null }))
+    .sort((a, b) => (a.role ?? '').localeCompare(b.role ?? '') || a.email.localeCompare(b.email));
 }
 
 /**
@@ -234,16 +249,22 @@ export async function syncTeamsFromInternal(): Promise<TeamSyncStats> {
 
   const teamIds = new Map<string, number>();
   let assigned = 0;
-  const unknownMailboxes: string[] = [];
+  const notWatched: TeamSyncStats['notWatched'] = [];
+  const activeInDashboard = new Set<string>();
 
   for (const m of members) {
     const email = (m.email ?? '').trim().toLowerCase();
     const role = (m.role ?? '').trim();
-    if (!email || !role) continue;
+    if (!email) continue;
+    if (m.is_active !== false) activeInDashboard.add(email);
+
     if (!watched.has(email)) {
-      unknownMailboxes.push(email);
+      // A new joiner is surfaced, never auto-watched: reading someone's mail
+      // is a decision for an admin, not a side effect of a sync.
+      if (m.is_active !== false) notWatched.push({ email, name: m.name ?? null, role: role || null });
       continue;
     }
+    if (!role) continue;
     if (!teamIds.has(role)) teamIds.set(role, await upsertTeam(role));
     const teamId = teamIds.get(role)!;
 
@@ -256,6 +277,24 @@ export async function syncTeamsFromInternal(): Promise<TeamSyncStats> {
     assigned += 1;
   }
 
-  logger.info({ teams: teamIds.size, assigned, notWatched: unknownMailboxes.length }, 'team sync from internal dashboard complete');
-  return { teams: [...teamIds.keys()], assigned, unknownMailboxes };
+  // Someone who has left the dashboard should stop being read.
+  const paused: string[] = [];
+  for (const email of watched) {
+    if (activeInDashboard.has(email)) continue;
+    // Only pause people the dashboard knows about; shared inboxes and anyone
+    // added by hand are left alone.
+    const known = members.some((m) => (m.email ?? '').trim().toLowerCase() === email);
+    if (!known) continue;
+    const res = await query(
+      "UPDATE mailboxes SET status = 'paused', updated_at = now() WHERE email = $1 AND status = 'active'",
+      [email],
+    );
+    if ((res as unknown as { length: number }).length !== 0 || true) paused.push(email);
+  }
+
+  logger.info(
+    { teams: teamIds.size, assigned, notWatched: notWatched.length, paused: paused.length },
+    'team sync from internal dashboard complete',
+  );
+  return { teams: [...teamIds.keys()], assigned, notWatched, paused };
 }

@@ -36,6 +36,7 @@ import {
   unmatchedSenders, updateMailbox,
 } from './settings.js';
 import { applyRoster } from '../sync/roster.js';
+import { listUnwatchedEmployees, syncTeamsFromInternal } from '../sync/internalSync.js';
 import { inspectInternalDb, testInternalDb } from '../sync/internalDb.js';
 import { checkUnrespondedItems } from '../sync/hourly.js';
 import { createRule, deleteRule, previewRule, reapplyRules, updateRule } from './rulesApi.js';
@@ -410,6 +411,21 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.delete('/api/settings/mailboxes/:id', async (req) => {
     const user = await adminOnly(req);
     return removeMailbox(user, Number((req.params as any).id));
+  });
+
+  app.get('/api/settings/unwatched', async (req) => {
+    await adminOnly(req);
+    try {
+      return { people: await listUnwatchedEmployees() };
+    } catch (err) {
+      // No internal dashboard configured, or unreachable: not an error here.
+      return { people: [], error: String(err) };
+    }
+  });
+
+  app.post('/api/settings/sync-teams', async (req) => {
+    await adminOnly(req);
+    return syncTeamsFromInternal();
   });
 
   app.post('/api/settings/roster', async (req) => {

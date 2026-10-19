@@ -72,6 +72,7 @@ export const api = {
   deleteSavedView: (id: number) => request<any>(`/api/saved-views/${id}`, { method: 'DELETE' }),
 
   settingsMailboxes: () => request<{ mailboxes: any[]; teams: any[] }>('/api/settings/mailboxes'),
+  unwatched: () => request<{ people: any[]; error?: string }>('/api/settings/unwatched'),
   settingsClients: () => request<{ clients: any[]; unmatched: any[] }>('/api/settings/clients'),
   settingsPost: (path: string, body?: unknown) =>
     request<any>(`/api/settings/${path}`, { method: 'POST', body: JSON.stringify(body ?? {}) }),
