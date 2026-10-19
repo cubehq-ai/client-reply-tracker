@@ -24,6 +24,8 @@ export interface ThreadMessage {
   snippet: string;
   isDraft: boolean;
   filterReason: string | null;
+  /** Sanitised on the client before rendering; null when the mail was text-only. */
+  bodyHtml: string | null;
 }
 
 export interface ThreadView {
@@ -74,7 +76,7 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
     query<any>(
       `SELECT m.id, m.rfc_message_id, m.from_email, m.to_emails, m.cc_emails, m.bcc_emails,
               m.subject, m.internal_date, m.direction, m.body_text_trunc, m.snippet,
-              m.is_draft, m.filter_reason
+              m.is_draft, m.filter_reason, m.body_html
          FROM messages m
          JOIN items i ON i.conversation_id = m.conversation_id
         WHERE i.id = $1
@@ -132,6 +134,7 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
     snippet: r.snippet ?? '',
     isDraft: r.is_draft,
     filterReason: r.filter_reason,
+    bodyHtml: r.body_html ? r.body_html : null,
   }));
 
   const lastExternal = [...messages].reverse().find((m) => m.direction === 'in' && !m.isDraft);

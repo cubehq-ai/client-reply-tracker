@@ -30,6 +30,7 @@ export interface ThreadMessage {
   bcc: string[];
   subject: string; date: string; direction: 'in' | 'out'; body: string;
   snippet: string; isDraft: boolean; filterReason: string | null;
+  bodyHtml: string | null;
 }
 
 export interface ThreadView {

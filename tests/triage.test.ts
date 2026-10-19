@@ -9,7 +9,7 @@ function msg(over: Partial<NormalizedMessage> = {}): NormalizedMessage {
     rfcMessageId: '<m1@acme.com>', inReplyTo: null, references: [],
     fromEmail: 'ops@acme.com', fromDomain: 'acme.com', fromName: 'Ops',
     to: ['priya@cubehq.ai'], cc: [], bcc: [], subject: 'A question', normalizedSubject: 'a question',
-    internalDate: new Date(), snippet: '', bodyText: 'hi', cleanedBody: 'hi',
+    internalDate: new Date(), snippet: '', bodyText: 'hi', bodyHtml: null, cleanedBody: 'hi',
     headers: {}, hasCalendarPart: false, isDraft: false, attachments: [],
     ...over,
   };

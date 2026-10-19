@@ -19,6 +19,7 @@ export interface NormalizedMessage {
   internalDate: Date;
   snippet: string;
   bodyText: string;
+  bodyHtml: string | null;
   /** Body with quoted history and signature removed, for classification. */
   cleanedBody: string;
   headers: Record<string, string>;
@@ -137,6 +138,7 @@ export function normalize(raw: RawMessage, mailbox: string): NormalizedMessage {
     internalDate: new Date(raw.internalDateMs),
     snippet: raw.snippet ?? '',
     bodyText: body.slice(0, 4000),
+    bodyHtml: raw.bodyHtml ?? null,
     cleanedBody: cleanBody(body).slice(0, 4000),
     headers: h,
     hasCalendarPart: raw.hasCalendarPart ?? false,

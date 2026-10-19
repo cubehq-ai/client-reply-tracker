@@ -15,6 +15,8 @@ export interface RawMessage {
   snippet: string;
   /** Truncated plain-text body, when fetched. */
   bodyText?: string;
+  /** Raw HTML part, when present. Rendered in preference to the text one. */
+  bodyHtml?: string;
   /** True when a text/calendar part is present (SPEC 4 step 3). */
   hasCalendarPart?: boolean;
   attachments?: { filename: string; mimeType: string; size: number }[];

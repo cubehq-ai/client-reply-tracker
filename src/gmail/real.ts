@@ -88,11 +88,14 @@ function walkParts(part: gmail_v1.Schema$MessagePart | undefined, acc: { text: s
 }
 
 const BODY_LIMIT = 4000; // SPEC 3.3
+// HTML is markup-heavy, so it needs far more room than the text part.
+const HTML_LIMIT = 200_000;
 
 function toRawMessage(m: gmail_v1.Schema$Message, withBody: boolean): RawMessage {
   const acc = { text: [] as string[], html: [] as string[], calendar: false, attachments: [] as NonNullable<RawMessage['attachments']> };
   if (withBody) walkParts(m.payload, acc);
-  const text = acc.text.join('\n').trim() || (withBody ? stripHtml(acc.html.join('\n')) : '');
+  const html = acc.html.join('\n').trim();
+  const text = acc.text.join('\n').trim() || (withBody ? stripHtml(html) : '');
   return {
     id: m.id!,
     threadId: m.threadId!,
@@ -101,6 +104,7 @@ function toRawMessage(m: gmail_v1.Schema$Message, withBody: boolean): RawMessage
     headers: flattenHeaders(m.payload?.headers),
     snippet: m.snippet ?? '',
     bodyText: withBody ? text.slice(0, BODY_LIMIT) : undefined,
+    bodyHtml: withBody && html ? html.slice(0, HTML_LIMIT) : undefined,
     hasCalendarPart: acc.calendar,
     attachments: acc.attachments,
     isDraft: (m.labelIds ?? []).includes('DRAFT'),

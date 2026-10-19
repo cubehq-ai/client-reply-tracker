@@ -19,6 +19,7 @@ import { checkMongoCredential, inspectInternalMongo } from './sync/internalMongo
 import { buildClientRecords, markChurnedClients, syncTeamsFromInternal } from './sync/internalSync.js';
 import { checkUnrespondedItems } from './sync/hourly.js';
 import { backfillContacts, contactStats } from './pipeline/contacted.js';
+import { backfillHtml } from './sync/backfillHtml.js';
 import { loadOrgContext } from './pipeline/context.js';
 
 const commands: Record<string, () => Promise<unknown>> = {
@@ -54,6 +55,7 @@ const commands: Record<string, () => Promise<unknown>> = {
   'hourly-status': () => checkUnrespondedItems(),
   'backfill-contacts': async () => backfillContacts((await loadOrgContext()).orgDomains),
   'contact-stats': () => contactStats(),
+  'backfill-html': () => backfillHtml(),
   bootstrap: async () => {
     await migrate();
     await seedReferenceData();

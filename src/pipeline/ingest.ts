@@ -207,22 +207,24 @@ async function upsertMessage(
   const res = await c.query<{ id: string }>(
     `INSERT INTO messages (conversation_id, rfc_message_id, from_email, from_domain, to_emails, cc_emails,
                            subject, internal_date, direction, snippet, body_text_trunc, in_reply_to,
-                           references_ids, is_draft, bcc_emails)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-     ON CONFLICT (rfc_message_id) DO NOTHING
-     RETURNING id`,
+                           references_ids, is_draft, bcc_emails, body_html)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+     ON CONFLICT (rfc_message_id) DO UPDATE SET
+       -- Backfill only: fills a column added after the message was stored,
+       -- and never overwrites a body we already have.
+       body_html = COALESCE(messages.body_html, EXCLUDED.body_html),
+       bcc_emails = CASE WHEN messages.bcc_emails = '{}' THEN EXCLUDED.bcc_emails ELSE messages.bcc_emails END
+     RETURNING id, (xmax = 0) AS inserted`,
     [
       conversationId, msg.rfcMessageId, msg.fromEmail, msg.fromDomain, msg.to, msg.cc,
       msg.subject, msg.internalDate, senderInternal ? 'out' : 'in', msg.snippet,
-      msg.bodyText, msg.inReplyTo, msg.references, msg.isDraft, msg.bcc,
+      msg.bodyText, msg.inReplyTo, msg.references, msg.isDraft, msg.bcc, msg.bodyHtml,
     ],
   );
 
-  if (res.rows[0]) return { messageId: Number(res.rows[0].id), duplicate: false };
-
-  // Already stored from another mailbox: reuse the row, add a copy (SPEC 4 step 1).
-  const existing = await c.query<{ id: string }>('SELECT id FROM messages WHERE rfc_message_id = $1', [msg.rfcMessageId]);
-  return { messageId: Number(existing.rows[0]!.id), duplicate: true };
+  const row = res.rows[0]!;
+  // Not inserted means it was already stored, here or from another mailbox.
+  return { messageId: Number(row.id), duplicate: !(row as any).inserted };
 }
 
 async function attachCopy(c: PoolClient, messageId: number, mailboxId: number, msg: NormalizedMessage): Promise<void> {
