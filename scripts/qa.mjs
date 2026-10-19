@@ -121,6 +121,31 @@ if (inbox.rows > 0) {
   const composerOpen = await page.evaluate(() => !!document.querySelector('.composer-card'));
   note(afterReply.expanded === before.expanded && composerOpen, 'Reply in the header opens the composer without collapsing');
   await page.keyboard.press('Escape');
+
+  // Rendered HTML must not inherit pre-wrap from the plain-text styling, or
+  // every newline in the markup becomes a visible line break and the message
+  // renders two to three times too tall.
+  const spacing = await page.evaluate(() => {
+    const el = document.querySelector('.msg-html');
+    if (!el) return null;
+    const blank = [...el.querySelectorAll('div, p')].find(
+      (n) => (n.textContent ?? '').trim() === '' && n.querySelector('br'),
+    );
+    return {
+      whiteSpace: getComputedStyle(el).whiteSpace,
+      lineHeight: parseFloat(getComputedStyle(el).lineHeight),
+      blankHeight: blank ? Math.round(blank.getBoundingClientRect().height) : null,
+    };
+  });
+  if (spacing) {
+    note(!/^pre/.test(spacing.whiteSpace), `html white-space is ${spacing.whiteSpace}`);
+    if (spacing.blankHeight !== null) {
+      note(
+        spacing.blankHeight <= spacing.lineHeight * 1.6,
+        `a blank line is ${spacing.blankHeight}px against a ${spacing.lineHeight}px line`,
+      );
+    }
+  }
   await page.locator('.drawer-head .btn', { hasText: 'Close' }).click();
   await page.waitForTimeout(600);
 } else {

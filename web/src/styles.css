@@ -533,7 +533,10 @@ td > input[type="text"] { display: inline-block; }
    Overriding it with !important flattened designed emails into bare gaps.
    <style> blocks are stripped during sanitising, so only inline styles apply
    and they cannot leak out of this container. */
-.msg-html { font-size: 13.5px; line-height: 1.5; }
+/* The plain-text path needs pre-wrap, but HTML must not have it: the markup
+   is pretty-printed, so every newline between tags became a line break and
+   a blank <div><br></div> rendered three lines tall. */
+.msg-html { font-size: 13.5px; line-height: 1.5; white-space: normal; }
 .msg-html table { max-width: 100%; }
 .msg-html * { max-width: 100%; }
 
