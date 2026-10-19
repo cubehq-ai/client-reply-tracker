@@ -43,7 +43,10 @@ export function prepareHtml(html: string, showImages: boolean): PreparedHtml {
   // Inline images referenced by Content-ID are never fetchable here.
   for (const img of [...doc.querySelectorAll('img')]) {
     const src = img.getAttribute('src') ?? '';
-    if (src.startsWith('cid:')) { img.remove(); continue; }
+    if (src.startsWith('cid:')) {
+      releaseReservedSpace(img.parentElement);
+      img.remove();
+    }
   }
 
   let blockedImages = 0;
@@ -53,6 +56,9 @@ export function prepareHtml(html: string, showImages: boolean): PreparedHtml {
       if (/^https?:/i.test(src)) {
         img.removeAttribute('src');
         img.setAttribute('data-blocked', '1');
+        // Without this the image keeps the space it was designed to fill,
+        // so a signature becomes a screen of empty boxes.
+        clearDimensions(img);
         blockedImages += 1;
       }
     }
@@ -65,50 +71,53 @@ export function prepareHtml(html: string, showImages: boolean): PreparedHtml {
   }
 
   // Split the quoted history out of the body.
-  const quotedParts: string[] = [];
+  //
+  // Mail clients each mark the boundary differently, and a long thread can
+  // carry several. Collect every candidate, take the earliest in document
+  // order, and fold from there — otherwise a later match leaves earlier
+  // quoted messages sitting in the open.
+  const candidates: Element[] = [];
+
   for (const selector of QUOTE_SELECTORS) {
-    for (const node of [...doc.querySelectorAll(selector)]) {
-      quotedParts.push(node.outerHTML);
-      node.remove();
-    }
+    candidates.push(...doc.body.querySelectorAll(selector));
   }
 
-  // Outlook writes the quote header as a plain block, often with only a
-  // border for a divider, so there is no <hr> to key on.
-  const headerBlock = [...doc.body.querySelectorAll('div, p, table')].find((el) => {
-    const text = (el.textContent ?? '').trim();
-    if (!/^(\*?From:\*?|-{3,}\s*Original Message|Begin forwarded message)/i.test(text)) return false;
-    // Must be the start of a block, not a mention inside a longer paragraph.
-    return text.length < 2000 && el.parentElement === doc.body;
+  const header = [...doc.body.querySelectorAll('p, div, td')].find((el) => {
+    const own = (el.textContent ?? '').replace(/\u00a0/g, ' ').trim();
+    if (!/^(\*?From:|-{3,}\s*Original Message|Begin forwarded message|On .{0,80} wrote:)/i.test(own)) return false;
+    if (own.length > 400) return false;
+    return !el.querySelector('p, div, td');
   });
-  if (headerBlock) {
-    const rest: string[] = [];
-    let node: Element | null = headerBlock;
-    while (node) {
-      const next: Element | null = node.nextElementSibling;
-      rest.push(node.outerHTML);
-      node.remove();
-      node = next;
-    }
-    quotedParts.push(rest.join(''));
+  if (header) candidates.push(header);
+
+  // An <hr> is Outlook's divider, but only when a quote header follows it.
+  for (const hr of [...doc.body.querySelectorAll('hr')]) {
+    const after = (hr.parentElement?.textContent ?? '');
+    if (/\b(From|Sent|To|Subject)\s*:/i.test(after)) candidates.push(hr);
   }
 
-  // An <hr> followed by a From:/Sent: header is Outlook's quote divider.
-  for (const hr of [...doc.querySelectorAll('hr')]) {
-    const rest: string[] = [];
-    let node: Element | null = hr.nextElementSibling;
-    while (node) {
-      const next: Element | null = node.nextElementSibling;
-      rest.push(node.outerHTML);
-      node.remove();
-      node = next;
-    }
-    if (rest.join('').match(/\b(From|Sent|To|Subject)\s*:/i)) {
-      quotedParts.push(rest.join(''));
-      hr.remove();
-    } else {
-      // Not a quote divider after all; put it back.
-      hr.insertAdjacentHTML('afterend', rest.join(''));
+  const quotedParts: string[] = [];
+  const earliest = candidates.reduce<Element | null>((best, el) => {
+    if (!best) return el;
+    // DOCUMENT_POSITION_PRECEDING means el comes before best.
+    return best.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING ? el : best;
+  }, null);
+
+  if (earliest) {
+    // Take the node and everything after it, at every level up to the body.
+    // Only following siblings: an ancestor still holds the message written
+    // above the boundary, which must stay visible.
+    let node: Element | null = earliest;
+    while (node && node !== doc.body) {
+      const parent: Element | null = node.parentElement;
+      let sibling: Element | null = node;
+      while (sibling) {
+        const next: Element | null = sibling.nextElementSibling;
+        quotedParts.push(sibling.outerHTML);
+        sibling.remove();
+        sibling = next;
+      }
+      node = parent && parent !== doc.body ? parent.nextElementSibling : null;
     }
   }
 
@@ -152,5 +161,32 @@ function collapseBlankSpace(root: HTMLElement): void {
   // A leading or trailing blank block adds nothing either.
   for (const edge of [root.firstElementChild, root.lastElementChild]) {
     if (edge && isBlank(edge)) edge.remove();
+  }
+}
+
+/** Drops the fixed width and height an element was given by the sender. */
+function clearDimensions(el: Element): void {
+  el.removeAttribute('width');
+  el.removeAttribute('height');
+  const style = el.getAttribute('style');
+  if (style) {
+    const stripped = style.replace(/(^|;)\s*(min-|max-)?(width|height)\s*:[^;]*/gi, '');
+    el.setAttribute('style', stripped.replace(/^;+/, ''));
+  }
+}
+
+/**
+ * A table cell sized for an image it no longer holds leaves a tall empty
+ * column, which is what turns an Outlook signature into a stretched grid.
+ */
+function releaseReservedSpace(cell: Element | null): void {
+  let el: Element | null = cell;
+  // Walk up while the ancestor exists only to hold that image.
+  for (let depth = 0; el && depth < 3; depth += 1) {
+    if (!/^(TD|TH|DIV|P|SPAN)$/.test(el.tagName)) break;
+    const text = (el.textContent ?? '').replace(/\u00a0/g, ' ').trim();
+    if (text !== '') break;
+    clearDimensions(el);
+    el = el.parentElement;
   }
 }

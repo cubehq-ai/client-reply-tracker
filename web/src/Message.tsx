@@ -1,9 +1,12 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { splitQuoted } from './quoted';
 import { prepareHtml } from './mailHtml';
 import type { ThreadView } from './api';
 
 type ThreadMessage = ThreadView['messages'][number];
+
+/** Taller than this and the message gets an expander instead. */
+const CLAMP_HEIGHT = 440;
 
 /**
  * One message in a thread. Collapsed it is a single summary line, the way any
@@ -19,6 +22,9 @@ export function Message({ message, open, onToggle, onReply, onReplyAll }: {
 }) {
   const [showQuoted, setShowQuoted] = useState(false);
   const [showImages, setShowImages] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [clamped, setClamped] = useState(false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const when = new Date(message.date);
 
   // Render the HTML part when there is one, the way a mail client does. The
@@ -29,6 +35,15 @@ export function Message({ message, open, onToggle, onReply, onReplyAll }: {
     [message.bodyHtml, showImages],
   );
   const text = html ? null : splitQuoted(message.body || message.snippet || '');
+
+  // Quote detection cannot cover every mail client, and a signature table can
+  // be taller than the message. Clamp anything long and let the reader open
+  // it, which is what a mail client does with trimmed content.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    setClamped(el.scrollHeight > CLAMP_HEIGHT + 80);
+  }, [message.id, showImages, showQuoted, html]);
   const visible = html ? html.visible : text!.visible;
   const quoted = html ? html.quoted : text!.quoted;
 
@@ -78,12 +93,28 @@ export function Message({ message, open, onToggle, onReply, onReplyAll }: {
               <button className="btn small" onClick={() => setShowImages(true)}>Show images</button>
             </div>
           )}
-          <div className="msg-body msg-html" dangerouslySetInnerHTML={{ __html: visible }} />
+          <div
+            ref={bodyRef}
+            className={`msg-body msg-html ${clamped && !expanded ? 'clamped' : ''}`}
+            dangerouslySetInnerHTML={{ __html: visible }}
+          />
+          {clamped && (
+            <button className="quoted-toggle" onClick={() => setExpanded((v) => !v)}>
+              {expanded ? 'Show less' : '••• Show full message'}
+            </button>
+          )}
         </>
       ) : (
-        <div className="msg-body">
-          {visible || <span className="muted">(no new text in this message)</span>}
-        </div>
+        <>
+          <div ref={bodyRef} className={`msg-body ${clamped && !expanded ? 'clamped' : ''}`}>
+            {visible || <span className="muted">(no new text in this message)</span>}
+          </div>
+          {clamped && (
+            <button className="quoted-toggle" onClick={() => setExpanded((v) => !v)}>
+              {expanded ? 'Show less' : '••• Show full message'}
+            </button>
+          )}
+        </>
       )}
 
       {quoted && (

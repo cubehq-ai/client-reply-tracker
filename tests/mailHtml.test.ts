@@ -76,3 +76,57 @@ describe('quoted history', () => {
     expect(quoted).toBe('');
   });
 });
+
+describe('layout left behind by removed images', () => {
+  it('releases the space a cid image was reserving', () => {
+    const html = '<table><tr><td width="138" style="width:103.5pt"><img src="cid:icon@1" width="16" height="16"></td><td>Jennifer</td></tr></table>';
+    const { visible } = prepareHtml(html, true);
+    expect(visible).not.toContain('cid:');
+    expect(visible).not.toContain('width="138"');
+    expect(visible).not.toMatch(/width:\s*103\.5pt/);
+  });
+
+  it('strips the dimensions of a blocked remote image', () => {
+    const { visible } = prepareHtml('<img src="https://t.test/p.gif" width="600" height="200" style="width:600px">', false);
+    expect(visible).not.toContain('width="600"');
+    expect(visible).not.toMatch(/width:\s*600px/);
+    expect(visible).toContain('data-blocked');
+  });
+
+  it('leaves a cell alone when it still holds text', () => {
+    const html = '<table><tr><td width="138"><img src="cid:x@1">Jennifer</td></tr></table>';
+    const { visible } = prepareHtml(html, true);
+    expect(visible).toContain('width="138"');
+    expect(visible).toContain('Jennifer');
+  });
+});
+
+describe('folding a nested quote header', () => {
+  it('keeps the reply that sits above a nested Outlook header', () => {
+    const html = [
+      '<div class="WordSection1">',
+      '<p>Thank you! I have approved these.</p>',
+      '<p><b>From:</b> Anishikar Singh</p>',
+      '<p>the original message</p>',
+      '</div>',
+    ].join('');
+    const { visible, quoted } = prepareHtml(html, true);
+    expect(visible).toContain('Thank you! I have approved these.');
+    expect(visible).not.toContain('the original message');
+    expect(quoted).toContain('the original message');
+  });
+
+  it('folds content that follows the header s container too', () => {
+    const html = '<div><p>my reply</p><p>From: someone</p></div><div>trailing quoted block</div>';
+    const { visible, quoted } = prepareHtml(html, true);
+    expect(visible).toContain('my reply');
+    expect(visible).not.toContain('trailing quoted block');
+    expect(quoted).toContain('trailing quoted block');
+  });
+
+  it('does not fold when there is no header at all', () => {
+    const { visible, quoted } = prepareHtml('<div><p>just a message</p></div>', true);
+    expect(visible).toContain('just a message');
+    expect(quoted).toBe('');
+  });
+});
