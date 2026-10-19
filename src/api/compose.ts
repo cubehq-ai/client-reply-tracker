@@ -8,6 +8,7 @@ import { loadOrgContext } from '../pipeline/context.js';
 import { normalizeSubject } from '../pipeline/normalize.js';
 import { refreshConversation } from '../sync/mailboxSync.js';
 import { audit } from './actions.js';
+import { listAttachments, type AttachmentRow } from './attachments.js';
 import { HttpError, type SessionUser } from './auth.js';
 
 export interface ThreadMessage {
@@ -26,6 +27,7 @@ export interface ThreadMessage {
   filterReason: string | null;
   /** Sanitised on the client before rendering; null when the mail was text-only. */
   bodyHtml: string | null;
+  attachments: AttachmentRow[];
 }
 
 export interface ThreadView {
@@ -120,6 +122,8 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
   const ownThread = ownThreadRows[0] ?? null;
   const lock = lockRows[0] ?? null;
 
+  const byMessage = await listAttachments(rows.map((r: any) => Number(r.id)));
+
   const messages: ThreadMessage[] = rows.map((r) => ({
     id: Number(r.id),
     rfcMessageId: r.rfc_message_id,
@@ -135,6 +139,7 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
     isDraft: r.is_draft,
     filterReason: r.filter_reason,
     bodyHtml: r.body_html ? r.body_html : null,
+    attachments: byMessage.get(Number(r.id)) ?? [],
   }));
 
   const lastExternal = [...messages].reverse().find((m) => m.direction === 'in' && !m.isDraft);

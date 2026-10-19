@@ -5,7 +5,7 @@ export interface QueueItem {
   clientId: number | null; clientName: string | null; ownerEmail: string | null;
   summary: string | null; reason: string | null;
   confidence: number | null; lowConfidence: boolean;
-  lastExternalAt: string | null; slaDueAt: string | null; overdue: boolean;
+  lastExternalAt: string | null; slaDueAt: string | null;
   repliedAt: string | null; repliedBy: string | null;
   reopenCount: number; muted: boolean; filterReason: string | null;
   fromEmail: string | null; snippet: string | null;
@@ -16,7 +16,6 @@ export interface InboxFacets {
   needsReply: number;
   noReplyNeeded: number;
   reasons: Record<string, number>;
-  overdue: number;
   unmatched: number;
   lowConfidence: number;
   notReplied: number;
@@ -31,6 +30,7 @@ export interface ThreadMessage {
   subject: string; date: string; direction: 'in' | 'out'; body: string;
   snippet: string; isDraft: boolean; filterReason: string | null;
   bodyHtml: string | null;
+  attachments: { id: number; filename: string; mimeType: string; size: number; isInline: boolean; contentId: string | null }[];
 }
 
 export interface ThreadView {
@@ -88,7 +88,6 @@ export const api = {
   reapplyRules: () => request<any>('/api/settings/rules/reapply', { method: 'POST' }),
   clients: (view: string) => request<{ clients: any[] }>(`/api/clients?view=${view}`),
   users: () => request<{ users: any[] }>('/api/users'),
-  metrics: () => request<any>('/api/metrics'),
 
   thread: (id: number, refresh = true) => request<ThreadView>(`/api/items/${id}/thread?refresh=${refresh}`),
   events: (id: number) => request<{ events: any[] }>(`/api/items/${id}/events`),

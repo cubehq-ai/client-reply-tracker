@@ -152,7 +152,7 @@ if (inbox.rows > 0) {
   note(false, 'inbox has no rows to open');
 }
 
-for (const [label, nav] of [['clients', 'Clients'], ['teams', 'Teams'], ['metrics', 'Metrics'], ['settings', 'Settings']]) {
+for (const [label, nav] of [['clients', 'Clients'], ['teams', 'Teams'], ['settings', 'Settings']]) {
   console.log(`\n${nav}`);
   await page.click(`.nav-item:has-text("${nav}")`);
   await page.waitForTimeout(1800);

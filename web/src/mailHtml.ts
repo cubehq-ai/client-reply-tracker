@@ -39,17 +39,40 @@ function sanitize(html: string): string {
   });
 }
 
-export function prepareHtml(html: string, showImages: boolean): PreparedHtml {
+export interface PrepareOptions {
+  showImages: boolean;
+  /** cid -> url, so inline images resolve through the attachment endpoint. */
+  inlineImages?: Map<string, string>;
+  /** Opening text of earlier messages in the thread, for quote detection. */
+  earlierMessages?: string[];
+}
+
+/** Normalises text for comparison: case, spacing and punctuation vary on quote. */
+function fingerprint(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 120);
+}
+
+export function prepareHtml(html: string, showImagesOrOptions: boolean | PrepareOptions): PreparedHtml {
+  const opts: PrepareOptions =
+    typeof showImagesOrOptions === 'boolean' ? { showImages: showImagesOrOptions } : showImagesOrOptions;
+  const showImages = opts.showImages;
   const doc = new DOMParser().parseFromString(sanitize(html), 'text/html');
 
   // Inline images referenced by Content-ID are never fetchable here.
   for (const img of [...doc.querySelectorAll('img')]) {
     const src = img.getAttribute('src') ?? '';
     if (src.startsWith('cid:')) {
-      // Remove first: the cell has to be empty before it can be judged empty.
-      const cell = img.parentElement;
-      img.remove();
-      releaseReservedSpace(cell);
+      // Resolve through the attachment endpoint when the part is known;
+      // otherwise drop it and release the space it was holding.
+      const cid = src.slice(4).replace(/^<|>$/g, '');
+      const url = opts.inlineImages?.get(cid);
+      if (url) {
+        img.setAttribute('src', url);
+      } else {
+        const cell = img.parentElement;
+        img.remove();
+        releaseReservedSpace(cell);
+      }
     }
   }
 
@@ -97,6 +120,18 @@ export function prepareHtml(html: string, showImages: boolean): PreparedHtml {
     return !el.querySelector('p, div, td');
   });
   if (header) candidates.push(header);
+
+  // The strongest signal is the thread itself: if a block repeats the opening
+  // of an earlier message, it is quoted, whatever divider the client used.
+  for (const earlier of opts.earlierMessages ?? []) {
+    const needle = fingerprint(earlier);
+    if (needle.length < 40) continue;
+    const match = [...doc.body.querySelectorAll('p, div, td, blockquote')].find((el) => {
+      if (el.querySelector('p, div, td, blockquote')) return false;
+      return fingerprint(el.textContent ?? '').startsWith(needle.slice(0, 40));
+    });
+    if (match) candidates.push(match);
+  }
 
   // An <hr> is Outlook's divider, but only when a quote header follows it.
   for (const hr of [...doc.body.querySelectorAll('hr')]) {

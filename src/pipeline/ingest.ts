@@ -57,6 +57,7 @@ export async function ingestMessage(raw: RawMessage, mailbox: string, ctx: OrgCo
     const conv = await resolveConversation(c, msg, ctx.orgDomains);
     const { messageId, duplicate } = await upsertMessage(c, msg, conv.id, senderInternal, ctx);
     await attachCopy(c, messageId, mailboxId, msg);
+    await storeAttachments(c, messageId, msg);
     await updateConversationRollup(c, conv.id, msg, senderInternal, externalParticipants);
     return { conversationId: conv.id, messageId, duplicate };
   });
@@ -225,6 +226,20 @@ async function upsertMessage(
   const row = res.rows[0]!;
   // Not inserted means it was already stored, here or from another mailbox.
   return { messageId: Number(row.id), duplicate: !(row as any).inserted };
+}
+
+/** Attachment metadata only; the bytes stay in Gmail and stream on demand. */
+async function storeAttachments(c: PoolClient, messageId: number, msg: NormalizedMessage): Promise<void> {
+  for (const a of msg.attachments) {
+    await c.query(
+      `INSERT INTO attachments (message_id, filename, mime_type, size_bytes,
+                                gmail_attachment_id, content_id, is_inline, part_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (message_id, COALESCE(part_id, ''), COALESCE(filename, '')) DO UPDATE SET
+         gmail_attachment_id = COALESCE(EXCLUDED.gmail_attachment_id, attachments.gmail_attachment_id)`,
+      [messageId, a.filename, a.mimeType, a.size, a.attachmentId ?? null, a.contentId ?? null, a.isInline ?? false, a.partId ?? null],
+    );
+  }
 }
 
 async function attachCopy(c: PoolClient, messageId: number, mailboxId: number, msg: NormalizedMessage): Promise<void> {

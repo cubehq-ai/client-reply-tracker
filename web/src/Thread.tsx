@@ -198,10 +198,11 @@ export function Thread({ itemId, user, clients, onClose, onChanged }: {
 
           {!thread && !error && <div className="empty">Loading thread…</div>}
 
-          {thread?.messages.map((m) => (
+          {thread?.messages.map((m, index) => (
             <Message
               key={m.id}
               message={m}
+              earlierMessages={thread.messages.slice(0, index).map((p) => p.body || p.snippet || '').filter(Boolean)}
               open={expanded.has(m.id)}
               onToggle={() => setExpanded((prev) => {
                 const next = new Set(prev);

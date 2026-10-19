@@ -1,6 +1,7 @@
-import { query } from '../db/pool.js';
+import { query, tx } from '../db/pool.js';
 import { getGmailClient } from '../gmail/index.js';
 import { logger } from '../lib/logger.js';
+import type { RawMessage } from '../gmail/types.js';
 
 export interface BackfillHtmlResult {
   scanned: number;
@@ -17,6 +18,20 @@ export interface BackfillHtmlResult {
  * existing row is never revisited and would keep rendering the text/plain
  * alternative forever. Safe to re-run; it only touches rows still missing it.
  */
+/** Same shape as the ingest path, so a backfilled message matches a fresh one. */
+async function storeParts(c: any, messageId: number, raw: RawMessage): Promise<void> {
+  for (const a of raw.attachments ?? []) {
+    await c.query(
+      `INSERT INTO attachments (message_id, filename, mime_type, size_bytes,
+                                gmail_attachment_id, content_id, is_inline, part_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (message_id, COALESCE(part_id, ''), COALESCE(filename, '')) DO UPDATE SET
+         gmail_attachment_id = COALESCE(EXCLUDED.gmail_attachment_id, attachments.gmail_attachment_id)`,
+      [messageId, a.filename, a.mimeType, a.size, a.attachmentId ?? null, a.contentId ?? null, a.isInline ?? false, a.partId ?? null],
+    );
+  }
+}
+
 export async function backfillHtml(limit = 400): Promise<BackfillHtmlResult> {
   const gmail = getGmailClient();
 
@@ -29,7 +44,9 @@ export async function backfillHtml(limit = 400): Promise<BackfillHtmlResult> {
           LIMIT 1
        ) mc ON true
        JOIN mailboxes mb ON mb.id = mc.mailbox_id
-      WHERE m.body_html IS NULL
+      WHERE (m.body_html IS NULL
+             OR NOT EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))
+        AND m.attachments_checked_at IS NULL
         AND mb.status = 'active'
       ORDER BY m.internal_date DESC
       LIMIT $1`,
@@ -44,12 +61,19 @@ export async function backfillHtml(limit = 400): Promise<BackfillHtmlResult> {
     try {
       const raw = await gmail.getMessage(row.email, row.gmail_message_id, { withBody: true });
       if (!raw?.bodyHtml) {
-        // Genuinely text-only. Mark it so the next pass skips it.
-        await query("UPDATE messages SET body_html = '' WHERE id = $1", [row.id]);
+        // Genuinely text-only. Mark it so the next pass skips it, but keep
+        // any attachments it carries.
+        await tx(async (c) => {
+          await c.query("UPDATE messages SET body_html = '', attachments_checked_at = now() WHERE id = $1", [row.id]);
+          if (raw) await storeParts(c, Number(row.id), raw);
+        });
         noHtmlPart += 1;
         continue;
       }
-      await query('UPDATE messages SET body_html = $2 WHERE id = $1', [row.id, raw.bodyHtml]);
+      await tx(async (c) => {
+        await c.query('UPDATE messages SET body_html = $2, attachments_checked_at = now() WHERE id = $1', [row.id, raw.bodyHtml]);
+        await storeParts(c, Number(row.id), raw);
+      });
       updated += 1;
     } catch (err) {
       failed += 1;
@@ -58,7 +82,7 @@ export async function backfillHtml(limit = 400): Promise<BackfillHtmlResult> {
   }
 
   const left = await query<{ n: string }>(
-    "SELECT count(*)::int AS n FROM messages WHERE body_html IS NULL",
+    'SELECT count(*)::int AS n FROM messages WHERE attachments_checked_at IS NULL',
   );
 
   const result = { scanned: rows.length, updated, noHtmlPart, failed, remaining: Number(left[0]?.n ?? 0) };

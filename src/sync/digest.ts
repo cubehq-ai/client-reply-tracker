@@ -6,19 +6,17 @@ export interface DigestLine {
   subject: string;
   clientName: string | null;
   ageHours: number;
-  overdue: boolean;
   itemId: number;
 }
 
 export interface OwnerDigest {
   ownerEmail: string;
   open: DigestLine[];
-  overdue: DigestLine[];
 }
 
 export interface ManagerDigest {
   managerEmail: string;
-  overdueByClient: { clientName: string; count: number; oldestHours: number }[];
+  byClient: { clientName: string; count: number; oldestHours: number }[];
 }
 
 /**
@@ -56,16 +54,14 @@ export async function buildOwnerDigests(): Promise<OwnerDigest[]> {
 
   const byOwner = new Map<string, OwnerDigest>();
   for (const r of rows) {
-    const entry: OwnerDigest = byOwner.get(r.owner_email) ?? { ownerEmail: r.owner_email, open: [], overdue: [] };
+    const entry: OwnerDigest = byOwner.get(r.owner_email) ?? { ownerEmail: r.owner_email, open: [] };
     const line: DigestLine = {
       itemId: Number(r.id),
       subject: r.subject ?? '(no subject)',
       clientName: r.client_name,
       ageHours: r.last_external_at ? Math.round((Date.now() - new Date(r.last_external_at).getTime()) / 3_600_000) : 0,
-      overdue: Boolean(r.sla_due_at && new Date(r.sla_due_at) < new Date()),
     };
     entry.open.push(line);
-    if (line.overdue) entry.overdue.push(line);
     byOwner.set(r.owner_email, entry);
   }
   return [...byOwner.values()];
@@ -80,31 +76,24 @@ export async function buildManagerDigests(): Promise<ManagerDigest[]> {
        JOIN users u ON u.id = i.owner_user_id
        JOIN users mgr ON mgr.email = u.manager_email
        LEFT JOIN clients cl ON cl.id = i.client_id
-      WHERE i.state = 'needs_reply' AND i.sla_due_at < now() AND mgr.status = 'active'
+      WHERE i.state = 'needs_reply' AND mgr.status = 'active'
       GROUP BY mgr.email, cl.name
       ORDER BY mgr.email, cnt DESC`,
   );
 
   const byManager = new Map<string, ManagerDigest>();
   for (const r of rows) {
-    const entry: ManagerDigest = byManager.get(r.manager_email) ?? { managerEmail: r.manager_email, overdueByClient: [] };
-    entry.overdueByClient.push({ clientName: r.client_name, count: r.cnt, oldestHours: r.oldest_hours });
+    const entry: ManagerDigest = byManager.get(r.manager_email) ?? { managerEmail: r.manager_email, byClient: [] };
+    entry.byClient.push({ clientName: r.client_name, count: r.cnt, oldestHours: r.oldest_hours });
     byManager.set(r.manager_email, entry);
   }
   return [...byManager.values()];
 }
 
 function renderOwnerDigest(d: OwnerDigest): string {
-  const lines = [`You have ${d.open.length} open item${d.open.length === 1 ? '' : 's'}, ${d.overdue.length} past SLA.`, ''];
-  if (d.overdue.length) {
-    lines.push('Past SLA:');
-    for (const l of d.overdue) lines.push(`  - [${l.clientName ?? 'unmatched'}] ${l.subject} (${l.ageHours}h)`);
-    lines.push('');
-  }
-  const rest = d.open.filter((l) => !l.overdue);
-  if (rest.length) {
-    lines.push('Still open:');
-    for (const l of rest.slice(0, 20)) lines.push(`  - [${l.clientName ?? 'unmatched'}] ${l.subject} (${l.ageHours}h)`);
+  const lines = [`${d.open.length} item${d.open.length === 1 ? '' : 's'} waiting on a reply, longest first.`, ''];
+  for (const l of d.open.slice(0, 25)) {
+    lines.push(`  - [${l.clientName ?? 'unmatched'}] ${l.subject} (${l.ageHours}h)`);
   }
   return lines.join('\n');
 }
@@ -118,12 +107,12 @@ export async function sendDailyDigests(): Promise<DigestRunResult> {
 
   for (const d of owners) {
     if (d.open.length === 0) continue;
-    await n.send(d.ownerEmail, `ReplyQueue: ${d.open.length} open, ${d.overdue.length} overdue`, renderOwnerDigest(d));
+    await n.send(d.ownerEmail, `ReplyQueue: ${d.open.length} waiting on a reply`, renderOwnerDigest(d));
   }
   for (const d of managers) {
-    if (d.overdueByClient.length === 0) continue;
-    const body = d.overdueByClient.map((c) => `  - ${c.clientName}: ${c.count} overdue, oldest ${c.oldestHours}h`).join('\n');
-    await n.send(d.managerEmail, 'ReplyQueue: team overdue by client', `Overdue items on your team:\n\n${body}`);
+    if (d.byClient.length === 0) continue;
+    const body = d.byClient.map((c) => `  - ${c.clientName}: ${c.count} waiting, oldest ${c.oldestHours}h`).join('\n');
+    await n.send(d.managerEmail, 'ReplyQueue: your team by client', `Waiting on a reply:\n\n${body}`);
   }
 
   logger.info({ owners: owners.length, managers: managers.length }, 'daily digests built');

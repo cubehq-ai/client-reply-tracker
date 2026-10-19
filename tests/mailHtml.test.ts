@@ -196,3 +196,46 @@ describe('empty table cells', () => {
     expect((visible.match(/<td/g) ?? []).length).toBe(2);
   });
 });
+
+describe('quoting detected from the thread itself', () => {
+  it('folds a block that repeats an earlier message, with no divider present', () => {
+    const earlier = 'Hi Jennifer, We have updated the LinkedIn content plan around this campaign on the dashboard.';
+    const html = `<div><p>Thank you! I have approved these.</p><p>${earlier}</p></div>`;
+    const { visible, quoted } = prepareHtml(html, { showImages: true, earlierMessages: [earlier] });
+    expect(visible).toContain('Thank you! I have approved these.');
+    expect(visible).not.toContain('LinkedIn content plan');
+    expect(quoted).toContain('LinkedIn content plan');
+  });
+
+  it('ignores punctuation and case differences introduced by quoting', () => {
+    const earlier = 'Could you confirm the delivery schedule for next week?';
+    const html = `<div><p>Yes, confirmed.</p><p>COULD YOU CONFIRM THE DELIVERY SCHEDULE FOR NEXT WEEK</p></div>`;
+    const { visible, quoted } = prepareHtml(html, { showImages: true, earlierMessages: [earlier] });
+    expect(visible).toContain('Yes, confirmed.');
+    expect(quoted).toContain('DELIVERY SCHEDULE');
+  });
+
+  it('does not fold on a short earlier message that could match by chance', () => {
+    const { visible, quoted } = prepareHtml('<div><p>Thanks</p><p>Noted</p></div>', {
+      showImages: true, earlierMessages: ['Thanks'],
+    });
+    expect(visible).toContain('Thanks');
+    expect(quoted).toBe('');
+  });
+});
+
+describe('inline images', () => {
+  it('resolves a cid reference to the attachment endpoint', () => {
+    const { visible } = prepareHtml('<img src="cid:logo@1">', {
+      showImages: true,
+      inlineImages: new Map([['logo@1', '/api/attachments/7?inline=true']]),
+    });
+    expect(visible).toContain('/api/attachments/7?inline=true');
+  });
+
+  it('still drops a cid image with no matching attachment', () => {
+    const { visible } = prepareHtml('<p>hi</p><img src="cid:missing@1">', { showImages: true });
+    expect(visible).not.toContain('cid:');
+    expect(visible).toContain('hi');
+  });
+});

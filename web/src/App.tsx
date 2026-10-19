@@ -4,14 +4,12 @@ import { Login } from './Login';
 import { Thread } from './Thread';
 import { Inbox, type Filters } from './Inbox';
 import { Settings } from './Settings';
-import { Metrics } from './Metrics';
 import { ErrorBoundary } from './ErrorBoundary';
 
 type Page =
   | { kind: 'inbox'; title: string; subtitle: string; preset: Filters }
   | { kind: 'clients' }
   | { kind: 'teams' }
-  | { kind: 'metrics' }
   | { kind: 'settings' };
 
 type InboxPage = Extract<Page, { kind: 'inbox' }>;
@@ -123,7 +121,6 @@ export function App() {
         <div className="nav-group">Insight</div>
         <button className={`nav-item ${page.kind === 'clients' ? 'active' : ''}`} onClick={() => setPage({ kind: 'clients' })}>Clients</button>
         <button className={`nav-item ${page.kind === 'teams' ? 'active' : ''}`} onClick={() => setPage({ kind: 'teams' })}>Teams</button>
-        <button className={`nav-item ${page.kind === 'metrics' ? 'active' : ''}`} onClick={() => setPage({ kind: 'metrics' })}>Metrics</button>
 
         <div className="nav-group">Setup</div>
         <button className={`nav-item ${page.kind === 'settings' ? 'active' : ''}`} onClick={() => setPage({ kind: 'settings' })}>Settings</button>
@@ -167,7 +164,6 @@ export function App() {
         {page.kind === 'teams' && (
           <TeamsView teams={teams} onPick={(id) => goInbox({ source: 'gmail', view: 'all', teamId: String(id) }, 'Inbox')} />
         )}
-        {page.kind === 'metrics' && <Metrics />}
         {page.kind === 'settings' && <Settings onChanged={refresh} clients={clients} />}
         </ErrorBoundary>
       </main>
@@ -191,7 +187,7 @@ function ClientsView({ clients, onPick }: { clients: any[]; onPick: (id: number)
       <div className="header"><div><h1>Clients</h1><div className="subtitle">Open volume, age and SLA breaches per client. Click through to that client's mail.</div></div></div>
       <div className="card">
         <table>
-          <thead><tr><th>Client</th><th>Services</th><th>Account manager</th><th className="num">Open</th><th className="num">Overdue</th><th>Oldest open</th></tr></thead>
+          <thead><tr><th>Client</th><th>Services</th><th>Account manager</th><th className="num">Waiting</th><th>Longest wait</th></tr></thead>
           <tbody>
             {clients.map((c) => (
               <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => onPick(c.id)}>
@@ -199,7 +195,6 @@ function ClientsView({ clients, onPick }: { clients: any[]; onPick: (id: number)
                 <td>{c.tier ?? '—'}</td>
                 <td className="muted">{c.account_manager ?? '—'}</td>
                 <td className="num">{c.open_count}</td>
-                <td className="num" style={{ color: c.overdue_count > 0 ? 'var(--danger)' : undefined }}>{c.overdue_count}</td>
                 <td className="muted">{timeAgo(c.oldest_open)}</td>
               </tr>
             ))}
@@ -216,7 +211,7 @@ function TeamsView({ teams, onPick }: { teams: any[]; onPick: (id: number) => vo
       <div className="header"><div><h1>Teams</h1><div className="subtitle">Who is carrying what. Click through to that team's mail.</div></div></div>
       <div className="card">
         <table>
-          <thead><tr><th>Team</th><th className="num">Members</th><th className="num">Open</th><th className="num">Overdue</th><th>Oldest open</th></tr></thead>
+          <thead><tr><th>Team</th><th className="num">Members</th><th className="num">Waiting</th><th>Longest wait</th></tr></thead>
           <tbody>
             {teams.length === 0 && <tr><td colSpan={5} className="muted">No teams yet. Add them in Settings.</td></tr>}
             {teams.map((t) => (
@@ -224,7 +219,6 @@ function TeamsView({ teams, onPick }: { teams: any[]; onPick: (id: number) => vo
                 <td><strong>{t.name}</strong></td>
                 <td className="num">{t.members}</td>
                 <td className="num">{t.open_count}</td>
-                <td className="num" style={{ color: t.overdue_count > 0 ? 'var(--danger)' : undefined }}>{t.overdue_count}</td>
                 <td className="muted">{timeAgo(t.oldest_open)}</td>
               </tr>
             ))}

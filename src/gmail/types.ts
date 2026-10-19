@@ -19,7 +19,17 @@ export interface RawMessage {
   bodyHtml?: string;
   /** True when a text/calendar part is present (SPEC 4 step 3). */
   hasCalendarPart?: boolean;
-  attachments?: { filename: string; mimeType: string; size: number }[];
+  attachments?: {
+    filename: string;
+    mimeType: string;
+    size: number;
+    /** Gmail's handle for fetching the bytes; absent for tiny inline parts. */
+    attachmentId?: string;
+    /** Content-ID, when the HTML body references it as cid:<id>. */
+    contentId?: string;
+    partId?: string;
+    isInline?: boolean;
+  }[];
   /** Gmail marks drafts with the DRAFT label; drafts never count as replies. */
   isDraft?: boolean;
 }
@@ -47,6 +57,8 @@ export interface GmailClient {
   listMessageIds(mailbox: string, q: string, maxResults?: number): Promise<{ id: string; threadId: string }[]>;
   getMessage(mailbox: string, id: string, opts?: { withBody?: boolean }): Promise<RawMessage | null>;
   getThreadMessages(mailbox: string, threadId: string): Promise<RawMessage[]>;
+  /** Raw bytes of one attachment part. */
+  getAttachment(mailbox: string, messageId: string, attachmentId: string): Promise<Buffer | null>;
   /** Current historyId for the mailbox, used to anchor the first sync. */
   getProfileHistoryId(mailbox: string): Promise<string>;
   listHistory(mailbox: string, startHistoryId: string): Promise<HistoryPage>;

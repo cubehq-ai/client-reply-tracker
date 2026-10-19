@@ -14,7 +14,6 @@ import { syncClients } from '../sync/clients.js';
 import { discoverMailboxes } from '../sync/discovery.js';
 import { reconcileOpenItems } from '../sync/reconcile.js';
 import { handlePubSubPush } from '../sync/pubsub.js';
-import { computeMetrics } from './metrics.js';
 import { syncHealth } from './syncHealth.js';
 import { modelStatus, trainLocalClassifier } from '../llm/localClassifier.js';
 import { sendDailyDigests } from '../sync/digest.js';
@@ -28,6 +27,7 @@ import {
   HttpError, requireRole, requireUser, setSessionCookie, verifyPassword,
 } from './auth.js';
 import { draftReply, getThread, sendReply } from './compose.js';
+import { fetchAttachment } from './attachments.js';
 import { clientOverview, inboxFacets, listQueue, queueCounts, teamOverview, type QueueFilters, type QueueName } from './queues.js';
 import {
   addClientDomain, addClientPattern, addMailbox, addMailboxesBulk, applyDomainSuggestions, createClient, createSavedView,
@@ -138,7 +138,6 @@ export async function buildServer(): Promise<FastifyInstance> {
       source: (q.source as QueueFilters['source']) ?? undefined,
       status: q.status ? q.status.split(',').filter(Boolean) : undefined,
       freshness: (q.freshness as QueueFilters['freshness']) ?? undefined,
-      overdue: q.overdue === 'true',
       unmatched: q.unmatched === 'true',
       lowConfidence: q.lowConfidence === 'true',
       muted: q.muted === 'true',
@@ -195,17 +194,24 @@ export async function buildServer(): Promise<FastifyInstance> {
     return { users: await query("SELECT id, email, name, role FROM users WHERE status = 'active' ORDER BY email") };
   });
 
-  app.get('/api/metrics', async (req) => {
-    await requireUser(req);
-    return computeMetrics();
-  });
-
   // ---------- one item ----------
   app.get('/api/items/:id/thread', async (req) => {
     const user = await requireUser(req);
     const id = Number((req.params as any).id);
     const refresh = (req.query as any)?.refresh !== 'false';
     return getThread(user, id, { refresh });
+  });
+
+  app.get('/api/attachments/:id', async (req, reply) => {
+    const user = await requireUser(req);
+    const file = await fetchAttachment(user, Number((req.params as any).id));
+    const inline = (req.query as any)?.inline === 'true';
+    return reply
+      .header('Content-Type', file.mimeType)
+      .header('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${file.filename.replace(/"/g, '')}"`)
+      // The bytes are a client's file; never let a shared cache hold them.
+      .header('Cache-Control', 'private, max-age=300')
+      .send(file.bytes);
   });
 
   app.get('/api/items/:id/events', async (req) => {

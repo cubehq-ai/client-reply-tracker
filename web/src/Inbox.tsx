@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, formatDue, timeAgo, type InboxFacets, type QueueItem, type User } from './api';
+import { api, timeAgo, type InboxFacets, type QueueItem, type User } from './api';
 import { MultiSelect } from './MultiSelect';
 
 /** Channel tabs. Email is v1; Slack is the planned second source (SPEC 15). */
@@ -17,8 +17,7 @@ const REASONS = [
 ];
 
 /** Flags on an item, not states: each narrows the current tab. */
-const FLAGS: { key: string; label: string; facet: 'overdue' | 'unmatched' | 'lowConfidence'; tab: string }[] = [
-  { key: 'overdue', label: 'Overdue', facet: 'overdue', tab: 'needs_reply' },
+const FLAGS: { key: string; label: string; facet: 'unmatched' | 'lowConfidence'; tab: string }[] = [
   { key: 'unmatched', label: 'Unmatched client', facet: 'unmatched', tab: 'both' },
   { key: 'lowConfidence', label: 'Low confidence', facet: 'lowConfidence', tab: 'both' },
 ];
@@ -224,7 +223,6 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
             <div className="row-title">
               <StateDot state={it.state} />
               {it.subject}
-              {it.overdue && <span className="tag overdue">overdue</span>}
               {it.muted && <span className="tag">muted</span>}
               {it.reason && <span className="tag">{REASONS.find((r) => r.key === it.reason)?.label ?? it.reason}</span>}
               {it.filterReason && <span className="tag">{it.filterReason}</span>}
@@ -232,7 +230,6 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
             </div>
             <div className="row-right">
               {timeAgo(it.lastExternalAt)}
-              {it.slaDueAt && it.state === 'needs_reply' && <div style={{ fontSize: 11 }}>{formatDue(it.slaDueAt)}</div>}
 
             </div>
             <div className="row-meta">

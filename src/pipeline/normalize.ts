@@ -26,7 +26,7 @@ export interface NormalizedMessage {
   headers: Record<string, string>;
   hasCalendarPart: boolean;
   isDraft: boolean;
-  attachments: { filename: string; mimeType: string; size: number }[];
+  attachments: NonNullable<RawMessage['attachments']>;
 }
 
 /** Pulls bare addresses out of a header value such as `"A B" <a@b.c>, d@e.f`. */

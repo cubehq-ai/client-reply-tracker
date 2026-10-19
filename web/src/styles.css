@@ -560,3 +560,18 @@ td > input[type="text"] { display: inline-block; }
 .msg-head-toggle:hover { background: var(--panel-2); }
 .msg.out .msg-head-toggle:hover { background: rgba(128, 128, 128, .08); }
 .msg-head-who, .msg-head-actions { cursor: auto; }
+
+/* Attachments sit under the message, as chips rather than a list. */
+.attachments {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 10px 12px; border-top: 1px solid var(--border);
+}
+.attachment {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 11px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel-2); font-size: 12.5px; text-decoration: none; color: var(--text);
+  max-width: 320px;
+}
+.attachment:hover { border-color: var(--accent); color: var(--accent); }
+.attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-size { color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }

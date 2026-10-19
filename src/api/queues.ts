@@ -30,7 +30,6 @@ export interface QueueFilters {
   /** Why a closed item is closed: replied | not_needed | filtered | ignored. */
   reasons?: string[];
   /** Flags on an item, not states. */
-  overdue?: boolean;
   unmatched?: boolean;
   lowConfidence?: boolean;
   muted?: boolean;
@@ -55,7 +54,6 @@ export interface QueueItem {
   lowConfidence: boolean;
   lastExternalAt: string | null;
   slaDueAt: string | null;
-  overdue: boolean;
   repliedAt: string | null;
   repliedBy: string | null;
   reopenCount: number;
@@ -105,10 +103,9 @@ function queueClause(queue: QueueName, _params: unknown[]): string {
 }
 
 function orderClause(queue: QueueName): string {
-  // Needs reply: overdue first, then oldest first (override 1).
-  if (queue === 'needs_reply') {
-    return `(i.sla_due_at IS NOT NULL AND i.sla_due_at < now()) DESC, i.last_external_at ASC NULLS LAST`;
-  }
+  // Longest unanswered first. There is no second key: the product tracks what
+  // has gone unattended, not who is late.
+  if (queue === 'needs_reply') return 'i.last_external_at ASC NULLS LAST';
   return 'i.state_since DESC NULLS LAST, i.last_external_at DESC NULLS LAST';
 }
 
@@ -163,7 +160,6 @@ export async function listQueue(
     const op = filters.freshness === 'aged' ? '<=' : '>';
     where.push(`i.last_external_at ${op} now() - ($${params.length} || ' hours')::interval`);
   }
-  if (filters.overdue) where.push("i.sla_due_at IS NOT NULL AND i.sla_due_at < now() AND i.state = 'needs_reply'");
   if (filters.unmatched) where.push('i.unmatched_client = true');
   if (filters.muted) where.push('i.muted = true');
   if (filters.lowConfidence) where.push('i.low_confidence = true');
@@ -226,7 +222,6 @@ export async function listQueue(
       lowConfidence: Boolean(r.low_confidence),
       lastExternalAt: r.last_external_at?.toISOString?.() ?? null,
       slaDueAt: r.sla_due_at?.toISOString?.() ?? null,
-      overdue: Boolean(r.sla_due_at && r.state === 'needs_reply' && r.sla_due_at < new Date()),
       repliedAt: r.replied_at?.toISOString?.() ?? null,
       repliedBy: r.replied_by,
       reopenCount: Number(r.reopen_count ?? 0),
@@ -268,7 +263,6 @@ export async function clientOverview(user: SessionUser, view: QueueFilters['view
   return query(
     `SELECT cl.id, cl.name, cl.tier,
             count(*) FILTER (WHERE i.state = 'needs_reply')::int AS open_count,
-            count(*) FILTER (WHERE i.state = 'needs_reply' AND i.sla_due_at < now())::int AS overdue_count,
             MIN(i.last_external_at) FILTER (WHERE i.state = 'needs_reply') AS oldest_open,
             u.email AS account_manager
        FROM clients cl
@@ -284,14 +278,13 @@ export async function clientOverview(user: SessionUser, view: QueueFilters['view
 /**
  * Counts for the inbox filter chips, computed inside the *current* filter
  * scope. These are deliberately overlapping subsets, which is why they are
- * chips rather than sidebar entries: "overdue" is a slice of "needs reply",
+ * chips rather than sidebar entries: each is a slice of the current tab,
  * not a sibling of it.
  */
 export async function inboxFacets(user: SessionUser, filters: QueueFilters = {}, tab: QueueName = 'needs_reply'): Promise<{
   needsReply: number;
   noReplyNeeded: number;
   reasons: Record<string, number>;
-  overdue: number;
   unmatched: number;
   lowConfidence: number;
   notReplied: number;
@@ -320,7 +313,6 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {},
   const rows = await query<any>(
     `SELECT i.state, i.reason,
             count(*)::int AS n,
-            count(*) FILTER (WHERE i.sla_due_at IS NOT NULL AND i.sla_due_at < now() AND i.state = 'needs_reply')::int AS overdue,
             count(*) FILTER (WHERE i.unmatched_client AND ${tabFilter})::int AS unmatched,
             count(*) FILTER (WHERE i.low_confidence AND ${tabFilter})::int AS low_conf,
             count(*) FILTER (WHERE i.state = 'needs_reply'
@@ -337,12 +329,11 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {},
   );
 
   const reasons: Record<string, number> = {};
-  let needsReply = 0, noReplyNeeded = 0, overdue = 0, unmatched = 0, lowConfidence = 0, notReplied = 0, fresh = 0;
+  let needsReply = 0, noReplyNeeded = 0, unmatched = 0, lowConfidence = 0, notReplied = 0, fresh = 0;
   for (const r of rows) {
     const n = Number(r.n);
     if (r.state === 'needs_reply') needsReply += n; else noReplyNeeded += n;
     if (r.reason) reasons[r.reason] = (reasons[r.reason] ?? 0) + n;
-    overdue += Number(r.overdue);
     unmatched += Number(r.unmatched);
     lowConfidence += Number(r.low_conf);
     notReplied += Number(r.aged);
@@ -350,7 +341,7 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {},
   }
 
   return {
-    needsReply, noReplyNeeded, reasons, overdue, unmatched, lowConfidence,
+    needsReply, noReplyNeeded, reasons, unmatched, lowConfidence,
     notReplied, fresh, thresholdHours: config.org.unrespondedAfterHours,
     total: needsReply + noReplyNeeded,
   };
@@ -364,7 +355,6 @@ export async function teamOverview(user: SessionUser, view: QueueFilters['view']
     `SELECT t.id, t.name,
             count(DISTINCT u.id)::int AS members,
             count(i.id) FILTER (WHERE i.state = 'needs_reply')::int AS open_count,
-            count(i.id) FILTER (WHERE i.state = 'needs_reply' AND i.sla_due_at < now())::int AS overdue_count,
             MIN(i.last_external_at) FILTER (WHERE i.state = 'needs_reply') AS oldest_open
        FROM teams t
        LEFT JOIN users u ON u.team_id = t.id AND u.status = 'active'

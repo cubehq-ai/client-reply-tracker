@@ -81,8 +81,20 @@ function walkParts(part: gmail_v1.Schema$MessagePart | undefined, acc: { text: s
   if (mime === 'text/plain') acc.text.push(decodeBody(part.body?.data));
   else if (mime === 'text/html') acc.html.push(decodeBody(part.body?.data));
   else if (mime === 'text/calendar' || mime === 'application/ics') acc.calendar = true;
-  if (part.filename) {
-    acc.attachments!.push({ filename: part.filename, mimeType: mime, size: part.body?.size ?? 0 });
+  // An inline image has no filename in some clients, but always a Content-ID.
+  const headers = flattenHeaders(part.headers);
+  const contentId = (headers['content-id'] ?? '').replace(/^<|>$/g, '');
+  const disposition = headers['content-disposition'] ?? '';
+  if (part.filename || contentId) {
+    acc.attachments!.push({
+      filename: part.filename || contentId || 'attachment',
+      mimeType: mime,
+      size: part.body?.size ?? 0,
+      attachmentId: part.body?.attachmentId ?? undefined,
+      contentId: contentId || undefined,
+      partId: part.partId ?? undefined,
+      isInline: /inline/i.test(disposition) || Boolean(contentId),
+    });
   }
   for (const child of part.parts ?? []) walkParts(child, acc);
 }
@@ -153,6 +165,20 @@ export class RealGmailClient implements GmailClient {
       return (res.data.messages ?? []).map((m) => toRawMessage(m, true));
     } catch (err: any) {
       if (err?.code === 404) return [];
+      throw err;
+    }
+  }
+
+  async getAttachment(mailbox: string, messageId: string, attachmentId: string): Promise<Buffer | null> {
+    const gmail = gmailFor(mailbox);
+    try {
+      const res = await withRetry('attachments.get', () =>
+        gmail.users.messages.attachments.get({ userId: 'me', messageId, id: attachmentId }),
+      );
+      const data = res.data.data;
+      return data ? Buffer.from(data, 'base64url') : null;
+    } catch (err: any) {
+      if (err?.code === 404) return null;
       throw err;
     }
   }

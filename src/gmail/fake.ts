@@ -88,6 +88,10 @@ export class FakeGmailClient implements GmailClient {
     return this.mb(mailbox).messages.filter((m) => m.threadId === threadId).sort((a, b) => a.internalDateMs - b.internalDateMs).map((m) => ({ ...m }));
   }
 
+  async getAttachment(): Promise<Buffer | null> {
+    return null;
+  }
+
   async getProfileHistoryId(mailbox: string): Promise<string> {
     return String(this.mb(mailbox).historyId);
   }
