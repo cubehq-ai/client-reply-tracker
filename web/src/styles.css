@@ -378,6 +378,27 @@ td > input[type="text"] { display: inline-block; }
   border-left: 2px solid var(--border); margin-left: 12px;
 }
 
+/* The compound selector is deliberate: .msg-html is defined later in this
+   file, so a single .quoted-body class loses to it and the history rendered
+   at the same size and weight as the reply above it. */
+.quoted-body.msg-html {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-left: 3px solid var(--border);
+  border-radius: 0 4px 4px 0;
+  margin: 0 12px 11px;
+  padding: 10px 12px;
+  opacity: .92;
+}
+
+/* One muted line in place of Outlook's five-row address block. */
+.quoted-attr {
+  color: var(--muted); font-size: 11.5px; margin-bottom: 8px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--border);
+}
+
 /* ---- thread drawer ---- */
 .drawer { width: 780px; max-width: 100vw; }
 .drawer-resize {

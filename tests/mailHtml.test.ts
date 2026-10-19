@@ -340,3 +340,63 @@ describe('quoted history', () => {
     expect(visible).toContain('changes to the product page');
   });
 });
+
+describe('quoted history is dressed down', () => {
+  const outlookHeader = (from: string, sent: string) =>
+    `<div id="divRplyFwdMsg" dir="ltr"><font face="Calibri"><b>From:</b> ${from}<br>` +
+    `<b>Sent:</b> ${sent}<br><b>To:</b> Marissa &lt;marissad@acfp.test&gt;<br>` +
+    `<b>Subject:</b> Re: Pop up for website</font><div>&nbsp;</div></div>`;
+
+  it('collapses Outlook address block to one attribution line', () => {
+    const html = `<p>Thanks!</p>${outlookHeader('Jatin &lt;jatin@cubehq.test&gt;', 'Friday, October 9, 2026 12:01 PM')}<div><p>Popup is live.</p></div>`;
+    const { quoted } = prepareHtml(html, true);
+    expect(quoted).toContain('quoted-attr');
+    expect(quoted).toContain('On Friday, October 9, 2026 12:01 PM, Jatin');
+    expect(quoted).not.toMatch(/Subject:/);
+    expect(quoted).toContain('Popup is live');
+  });
+
+  it('collapses every header, not just the first', () => {
+    // A thread five deep carries one header per level.
+    const html =
+      `<p>ok</p>${outlookHeader('A &lt;a@x.test&gt;', 'Mon, 1 Jan 2026')}<p>one</p>` +
+      `${outlookHeader('B &lt;b@x.test&gt;', 'Tue, 2 Jan 2026')}<p>two</p>`;
+    const { quoted } = prepareHtml(html, true);
+    expect((quoted.match(/quoted-attr/g) ?? [])).toHaveLength(2);
+    expect(quoted).not.toMatch(/Subject:/);
+  });
+
+  it('drops a gateway banner together with the box drawn around it', () => {
+    const html =
+      '<p>reply</p><div class="gmail_quote"><p>history</p>' +
+      '<div style="border:solid #9C6500 1.0pt;padding:2pt">' +
+      '<div class="mc-ip-hide"><b>CAUTION: This email originated from outside of AMOUAGE. ' +
+      'DO NOT CLICK, DO NOT Reply unless you recognize the sender</b></div></div></div>';
+    const { quoted } = prepareHtml(html, true);
+    expect(quoted).not.toMatch(/CAUTION|originated from outside/i);
+    expect(quoted).not.toMatch(/#9C6500/);
+    expect(quoted).toContain('history');
+  });
+
+  it('sizes quoted text a step below the reply', () => {
+    const html = '<p>reply</p><div class="gmail_quote"><p style="font-size:11.0pt">history</p></div>';
+    const { visible, quoted } = prepareHtml(html, true);
+    expect(visible).toContain('reply');
+    const size = Number(/font-size:\s*([\d.]+)px/.exec(quoted)?.[1]);
+    expect(size).toBeCloseTo(11, 0);
+    // the same declaration in the reply above renders larger
+    const inReply = Number(/font-size:\s*([\d.]+)px/.exec(prepareHtml('<p style="font-size:11.0pt">x</p>', true).visible)?.[1]);
+    expect(size).toBeLessThan(inReply);
+  });
+});
+
+describe('line breaks', () => {
+  it('keeps a single break after text, and collapses a blank run', () => {
+    // previousElementSibling steps over the text between two breaks, so a
+    // sign-off used to fold onto one line.
+    const { visible } = prepareHtml('<p>Done.<br><br>Best<br>Anishikar</p>', true);
+    const breaks = (visible.match(/<br>/g) ?? []).length;
+    expect(breaks).toBe(2);
+    expect(visible).toMatch(/Best<br>\s*Anishikar/);
+  });
+});

@@ -207,7 +207,7 @@ export function prepareHtml(html: string, showImagesOrOptions: boolean | Prepare
 
   return {
     visible: doc.body.innerHTML.trim(),
-    quoted: quotedParts.join(''),
+    quoted: dressQuoted(quotedParts.join('')),
     blockedImages,
   };
 }
@@ -252,9 +252,11 @@ function isTrackingPixel(img: Element): boolean {
  */
 const MAIL_BASE_PX = 13.5;
 const BROWSER_BASE_PX = 16;
+/** Quoted history is reference material, and reads a step down from the reply. */
+const QUOTED_BASE_PX = 12;
 
-function normaliseFontSizes(root: HTMLElement): void {
-  const scale = MAIL_BASE_PX / BROWSER_BASE_PX;
+function normaliseFontSizes(root: HTMLElement, basePx: number = MAIL_BASE_PX, fromPx: number = BROWSER_BASE_PX): void {
+  const scale = basePx / fromPx;
 
   for (const el of [...root.querySelectorAll<HTMLElement>('[style*="font-size" i]')]) {
     const style = el.getAttribute('style') ?? '';
@@ -265,7 +267,9 @@ function normaliseFontSizes(root: HTMLElement): void {
         // Hidden preheader text is sized to nothing on purpose. Scaling it up
         // would drag a line the sender never meant to show into the message.
         if (!Number.isFinite(px) || px < 6) return whole;
-        const next = Math.round(Math.min(Math.max(px * scale, 11.5), 22) * 10) / 10;
+        // The band is proportional to the base, so quoted history really is
+        // a step down rather than being clamped back up to the body's floor.
+        const next = Math.round(Math.min(Math.max(px * scale, basePx * 0.85), basePx * 1.63) * 10) / 10;
         return `${lead}${prop}${next}px`;
       }),
     );
@@ -297,10 +301,28 @@ function collapseBlankSpace(root: HTMLElement): void {
   }
 
   // Runs of <br>, which Outlook uses instead of paragraph spacing.
+  //
+  // Walk raw siblings, not element siblings: previousElementSibling steps
+  // over the text between two breaks, so "Best<br>Anishikar" counted the
+  // blank break above "Best" as part of a run and folded a sign-off onto one
+  // line. A break only continues a run when nothing but whitespace precedes
+  // it.
   for (const br of [...root.querySelectorAll('br')]) {
     let run = 0;
-    let node: Element | null = br.previousElementSibling;
-    while (node && node.tagName === 'BR') { run += 1; node = node.previousElementSibling; }
+    let node: Node | null = br.previousSibling;
+    while (node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if ((node.textContent ?? '').trim() !== '') break;
+        node = node.previousSibling;
+        continue;
+      }
+      if (node.nodeType === Node.ELEMENT_NODE && (node as Element).tagName === 'BR') {
+        run += 1;
+        node = node.previousSibling;
+        continue;
+      }
+      break;
+    }
     if (run >= 1) br.remove();
   }
 
@@ -384,5 +406,113 @@ function dropEmptyCells(root: HTMLElement): void {
     const row = cell.parentElement;
     cell.remove();
     if (row && row.tagName === 'TR' && row.children.length === 0) row.remove();
+  }
+}
+
+/**
+ * Makes quoted history read as history.
+ *
+ * Folded out of the body it still arrives as full-dress mail: Outlook's
+ * five-line From/Sent/To/Cc/Subject block, a gateway's external-sender
+ * warning, and font sizes matching the reply above it, so the panel reads as
+ * a second message rather than as the thread behind one.
+ */
+function dressQuoted(html: string): string {
+  if (!html.trim()) return html;
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+
+  collapseQuoteHeader(doc.body);
+  dropExternalSenderWarning(doc.body);
+  // Measured against the body base, not the browser's: these declarations
+  // have already been through the first pass, and scaling them from 16px
+  // again would shrink them twice.
+  normaliseFontSizes(doc.body, QUOTED_BASE_PX, MAIL_BASE_PX);
+  collapseBlankSpace(doc.body);
+
+  return doc.body.innerHTML.trim();
+}
+
+/**
+ * Replaces Outlook's header block with the one line Gmail shows. Five labelled
+ * rows of addresses is most of a screen before any content, and the addresses
+ * are already on the message this history belongs to.
+ *
+ * Every such block, not just the first: quoted history nests, and a thread
+ * five replies deep carries one header per level.
+ */
+function collapseQuoteHeader(root: HTMLElement): void {
+  // <font> and <span> are in the list because Outlook puts the whole block
+  // inside one; the nested-block test ignores blank children, because the
+  // same markup ends with an empty <div>&nbsp;</div> spacer that would
+  // otherwise disqualify the wrapper holding the header.
+  for (const el of [...root.querySelectorAll('p, div, td, font, span')]) {
+    const nested = [...el.querySelectorAll('p, div, td')].some(
+      (c) => (c.textContent ?? '').replace(/\u00a0/g, ' ').trim() !== '',
+    );
+    if (nested) continue;
+    const text = (el.textContent ?? '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!/^\*?From:/i.test(text) || text.length > 600) continue;
+    if (!/\bSubject:/i.test(text)) continue;
+
+    const from = /From:\s*([^;]*?)\s*(?:Sent:|To:|Date:|Subject:|$)/i.exec(text)?.[1]?.trim();
+    const sent = /(?:Sent|Date):\s*(.*?)\s*(?:To:|Cc:|Subject:|$)/i.exec(text)?.[1]?.trim();
+    if (!from) continue;
+
+    const line = doc_createAttribution(root, sent ? `On ${sent}, ${from} wrote:` : `${from} wrote:`);
+    el.replaceWith(line);
+  }
+}
+
+function doc_createAttribution(root: HTMLElement, text: string): HTMLElement {
+  const line = root.ownerDocument.createElement('div');
+  line.className = 'quoted-attr';
+  line.textContent = text;
+  return line;
+}
+
+/**
+ * Drops the banner a mail gateway staples to anything from outside the org.
+ * It is advice about a message the reader has already opened, and inside
+ * quoted history it is the loudest thing on screen.
+ */
+function dropExternalSenderWarning(root: HTMLElement): void {
+  const PATTERN = /(originated from outside|external (e-?mail|sender)|do not click links or open attachments)/i;
+  const textOf = (el: Element): string => (el.textContent ?? '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+
+  // Every element, not a list of block tags: gateways wrap the sentence in
+  // whatever they like -- <b> inside a <div> is common -- and a scan that
+  // only knew block tags skipped the wrapper (its child held the text) and
+  // never reached the child.
+  for (const el of [...root.querySelectorAll('*')]) {
+    if (!el.isConnected) continue;
+    const own = textOf(el);
+    if (own.length > 400 || !PATTERN.test(own)) continue;
+    // Innermost match: the element that actually holds the sentence.
+    if ([...el.children].some((c) => PATTERN.test(textOf(c)))) continue;
+
+    // Climb to the outermost wrapper holding nothing but the banner, so the
+    // bordered box around it goes too, but a parent carrying real content
+    // alongside is left alone.
+    let host: Element = el;
+    while (host.parentElement && host.parentElement !== root && textOf(host.parentElement) === own) {
+      host = host.parentElement;
+    }
+    const parent = host.parentElement;
+    host.remove();
+    pruneEmptyAncestors(parent, root);
+  }
+}
+
+/**
+ * Removes wrappers left holding nothing. A gateway banner sits in a bordered
+ * box of its own, and taking only the text out leaves the border behind as an
+ * empty rectangle.
+ */
+function pruneEmptyAncestors(from: Element | null, root: HTMLElement): void {
+  let node = from;
+  while (node && node !== root && !hasContent(node as HTMLElement)) {
+    const parent: Element | null = node.parentElement;
+    node.remove();
+    node = parent;
   }
 }
