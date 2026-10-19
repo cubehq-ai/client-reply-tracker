@@ -30,16 +30,42 @@ describe('sanitising', () => {
 
 describe('remote images', () => {
   it('holds them back by default and counts them', () => {
-    const { visible, blockedImages } = prepareHtml('<img src="https://tracker.test/pixel.gif">', false);
+    const { visible, blockedImages } = prepareHtml('<img src="https://cdn.test/banner.png">', false);
     expect(blockedImages).toBe(1);
-    expect(visible).not.toContain('tracker.test');
+    expect(visible).not.toContain('cdn.test');
     expect(visible).toContain('data-blocked');
   });
 
   it('shows them once asked', () => {
-    const { visible, blockedImages } = prepareHtml('<img src="https://tracker.test/pixel.gif">', true);
+    const { visible, blockedImages } = prepareHtml('<img src="https://cdn.test/banner.png">', true);
     expect(blockedImages).toBe(0);
-    expect(visible).toContain('tracker.test');
+    expect(visible).toContain('cdn.test');
+  });
+
+  it('drops a tracking pixel instead of offering to load it', () => {
+    // Nothing would appear if the reader accepted, and accepting tells the
+    // sender the mail was opened.
+    const beacon = '<p>hi</p><img src="https://email.otter.ai/wf/open?upn=abc" width="1" height="1">';
+    const { visible, blockedImages } = prepareHtml(beacon, false);
+    expect(blockedImages).toBe(0);
+    expect(visible).not.toContain('otter.ai');
+    expect(visible).toContain('hi');
+  });
+
+  it('drops a 1x1 beacon styled rather than sized', () => {
+    const beacon = '<img src="https://cdn.test/t.png" style="width:1px;height:1px">';
+    expect(prepareHtml(beacon, false).blockedImages).toBe(0);
+  });
+
+  it('does not offer images that live in quoted history', () => {
+    // The notice sits above the visible body; an image folded away behind
+    // "Show quoted text" is not on screen for it to point at.
+    const html =
+      '<p>latest</p><div class="gmail_quote"><img src="https://cdn.test/old.png" width="400" height="300"></div>';
+    const { visible, quoted, blockedImages } = prepareHtml(html, false);
+    expect(blockedImages).toBe(0);
+    expect(visible).toContain('latest');
+    expect(quoted).toContain('data-blocked');
   });
 
   it('drops cid: images, which can never load here', () => {
@@ -237,5 +263,35 @@ describe('inline images', () => {
     const { visible } = prepareHtml('<p>hi</p><img src="cid:missing@1">', { showImages: true });
     expect(visible).not.toContain('cid:');
     expect(visible).toContain('hi');
+  });
+});
+
+describe('font sizes', () => {
+  it('scales the sender\'s points into the app\'s range', () => {
+    // 11pt is 14.67px against a browser's 16px default; the mail body renders
+    // at 13.5px, so the declaration has to come down by the same factor.
+    const { visible } = prepareHtml('<p style="font-size:11.0pt">body</p>', true);
+    const size = /font-size:\s*([\d.]+)px/.exec(visible)?.[1];
+    expect(Number(size)).toBeCloseTo(12.4, 1);
+  });
+
+  it('keeps relative emphasis between sizes', () => {
+    const { visible } = prepareHtml('<p style="font-size:24px">big</p><p style="font-size:12px">small</p>', true);
+    const sizes = [...visible.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]));
+    expect(sizes).toHaveLength(2);
+    expect(sizes[0]!).toBeGreaterThan(sizes[1]!);
+  });
+
+  it('leaves hidden preheader text at nothing', () => {
+    // Sized to vanish on purpose; scaling it up drags a line the sender never
+    // meant to show into the message.
+    const { visible } = prepareHtml('<div style="font-size:1px">preheader</div><p>body</p>', true);
+    expect(visible).toContain('font-size:1px');
+  });
+
+  it('drops the <font size> bucket, which is not a measurement', () => {
+    const { visible } = prepareHtml('<font size="1">tiny</font>', true);
+    expect(visible).not.toContain('size="1"');
+    expect(visible).toContain('tiny');
   });
 });

@@ -36,7 +36,7 @@ import {
   unmatchedSenders, updateMailbox,
 } from './settings.js';
 import { applyRoster } from '../sync/roster.js';
-import { dismissNewPerson, listNewPeople, syncTeamsFromInternal } from '../sync/internalSync.js';
+import { dismissNewPerson, listAllUnwatched, listNewPeople, syncTeamsFromInternal } from '../sync/internalSync.js';
 import { inspectInternalDb, testInternalDb } from '../sync/internalDb.js';
 import { checkUnrespondedItems } from '../sync/hourly.js';
 import { createRule, deleteRule, previewRule, reapplyRules, updateRule } from './rulesApi.js';
@@ -415,8 +415,9 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.get('/api/settings/new-people', async (req) => {
     await adminOnly(req);
+    const all = (req.query as any)?.all === 'true';
     try {
-      return { people: await listNewPeople() };
+      return { people: all ? await listAllUnwatched() : await listNewPeople() };
     } catch (err) {
       // No internal dashboard configured, or unreachable: not an error here.
       return { people: [], error: String(err) };

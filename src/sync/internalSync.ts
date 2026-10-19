@@ -42,6 +42,9 @@ interface MongoClient {
   is_churned?: boolean;
   notification_emails?: unknown;
   website_access_id?: unknown;
+  /** Team member who owns the account; tpl is the fallback. */
+  npl_member_id?: string;
+  tpl_member_id?: string;
   seo?: { gsc?: { site_url?: unknown }; ga4?: { name?: unknown }; gmc?: { name?: unknown } };
 }
 
@@ -100,7 +103,18 @@ export async function buildClientRecords(): Promise<{ records: ClientRecord[]; s
   const orgDomains = new Set(config.org.domains.map((d) => d.toLowerCase()));
   const free = await freeDomainSet();
 
-  const docs = await withInternalDb(async (db) => db.collection('clients').find<MongoClient>({}, 1000));
+  // Clients name their owner by team-member id; resolve those to addresses so
+  // the account manager is known here too. It decides who owns mail sent to a
+  // shared inbox, so it is not only a column in a table.
+  const { docs, memberEmailById } = await withInternalDb(async (db) => {
+    const clients = await db.collection('clients').find<MongoClient>({}, 1000);
+    const members = await db.collection('team_members').find<{ id?: string; email?: string }>({}, 1000);
+    const byId = new Map<string, string>();
+    for (const m of members) {
+      if (m.id && m.email) byId.set(m.id, m.email.trim().toLowerCase());
+    }
+    return { docs: clients, memberEmailById: byId };
+  });
 
   // First pass: which client(s) does each external domain belong to?
   const domainOwners = new Map<string, Set<string>>();
@@ -164,7 +178,10 @@ export async function buildClientRecords(): Promise<{ records: ClientRecord[]; s
       externalId: `agency:${key}`,
       name: (doc.name ?? '').trim(),
       tier: serviceLabel(doc.service_type),
-      accountManagerEmail: null,
+      accountManagerEmail:
+        (doc.npl_member_id ? memberEmailById.get(doc.npl_member_id) : undefined) ??
+        (doc.tpl_member_id ? memberEmailById.get(doc.tpl_member_id) : undefined) ??
+        null,
       domains,
       // Exact addresses always map, including on a shared or free domain.
       contacts,
@@ -286,6 +303,28 @@ export async function listNewPeople(): Promise<NewPerson[]> {
   }));
 }
 
+/**
+ * Everyone active in the dashboard who is not being watched, newest first.
+ * Behind a toggle: it is a standing backlog rather than a prompt, but it is
+ * the only way to reach someone who joined before this tool started.
+ */
+export async function listAllUnwatched(): Promise<NewPerson[]> {
+  const rows = await query<{ email: string; name: string | null; role: string | null; first_seen_at: Date }>(
+    `SELECT p.email, p.name, p.role, p.first_seen_at
+       FROM internal_people_seen p
+      WHERE p.dismissed_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM mailboxes mb WHERE mb.email = p.email)
+      ORDER BY p.role NULLS LAST, p.email`,
+    [],
+  );
+  return rows.map((r) => ({
+    email: r.email,
+    name: r.name,
+    role: r.role,
+    firstSeenAt: r.first_seen_at.toISOString(),
+  }));
+}
+
 export async function dismissNewPerson(email: string): Promise<void> {
   await query('UPDATE internal_people_seen SET dismissed_at = now() WHERE email = $1', [email.toLowerCase()]);
 }
@@ -306,6 +345,14 @@ export async function syncTeamsFromInternal(): Promise<TeamSyncStats> {
     (await query<{ email: string }>("SELECT email FROM mailboxes WHERE status <> 'excluded'")).map((r) => r.email.toLowerCase()),
   );
 
+  // A team chosen here outranks the dashboard role. Someone put a mailbox in
+  // an Email Marketing team that exists only in this tool; the sync has no
+  // business pulling it back to their dashboard role.
+  const manual = new Set(
+    (await query<{ email: string }>("SELECT email FROM mailboxes WHERE team_source = 'manual'"))
+      .map((r) => r.email.toLowerCase()),
+  );
+
   const teamIds = new Map<string, number>();
   let assigned = 0;
 
@@ -322,14 +369,20 @@ export async function syncTeamsFromInternal(): Promise<TeamSyncStats> {
       continue;
     }
     if (!role) continue;
+    if (manual.has(email)) continue;
     if (!teamIds.has(role)) teamIds.set(role, await upsertTeam(role));
     const teamId = teamIds.get(role)!;
 
     await tx(async (c) => {
-      await c.query('UPDATE users SET team_id = $2, name = COALESCE($3, name), updated_at = now() WHERE email = $1', [
-        email, teamId, m.name ?? null,
-      ]);
-      await c.query('UPDATE mailboxes SET team_id = $2, updated_at = now() WHERE email = $1', [email, teamId]);
+      await c.query(
+        `UPDATE users SET team_id = $2, name = COALESCE($3, name), updated_at = now()
+          WHERE email = $1 AND team_source <> 'manual'`,
+        [email, teamId, m.name ?? null],
+      );
+      await c.query(
+        "UPDATE mailboxes SET team_id = $2, updated_at = now() WHERE email = $1 AND team_source <> 'manual'",
+        [email, teamId],
+      );
     });
     assigned += 1;
   }

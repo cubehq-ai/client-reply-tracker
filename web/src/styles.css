@@ -536,6 +536,9 @@ td > input[type="text"] { display: inline-block; }
 /* The plain-text path needs pre-wrap, but HTML must not have it: the markup
    is pretty-printed, so every newline between tags became a line break and
    a blank <div><br></div> rendered three lines tall. */
+/* Mail renders at a fixed size of its own, not at the app's: senders ship
+   their own font-size declarations, which prepareHtml() rescales into a band
+   around this value. Keep the two in step — MAIL_BASE_PX in mailHtml.ts. */
 .msg-html { font-size: 13.5px; line-height: 1.5; white-space: normal; }
 .msg-html table { max-width: 100%; }
 .msg-html * { max-width: 100%; }
@@ -559,7 +562,11 @@ td > input[type="text"] { display: inline-block; }
 .msg-head-toggle { cursor: pointer; }
 .msg-head-toggle:hover { background: var(--panel-2); }
 .msg.out .msg-head-toggle:hover { background: rgba(128, 128, 128, .08); }
-.msg-head-who, .msg-head-actions { cursor: auto; }
+/* The who span covers most of the header, so it must not reset the cursor
+   the toggle sets; only the action buttons keep their own. */
+.msg-head-toggle, .msg-head-toggle * { cursor: pointer; }
+.msg-head-actions, .msg-head-actions * { cursor: auto; }
+.msg-head-actions .btn { cursor: pointer; }
 
 /* Attachments sit under the message, as chips rather than a list. */
 .attachments {
@@ -575,3 +582,18 @@ td > input[type="text"] { display: inline-block; }
 .attachment:hover { border-color: var(--accent); color: var(--accent); }
 .attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-size { color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+
+/* A <select> sizes itself to its longest option, so a column of them lands
+   ragged when the options differ per row. Stretch them to the cell instead. */
+td select { width: 100%; max-width: 280px; }
+/* Action columns read better left-aligned than centred on a varying control. */
+td:last-child, th:last-child { text-align: left; }
+
+/* Buttons stacked in a cell line up with each other rather than centring
+   individually on their own width. */
+td > .btn { display: inline-flex; }
+td .mono > .btn { margin-left: 6px; }
+
+/* A cell holding a control is left-aligned: centring makes each control sit
+   on its own width, so a column of them lands ragged. */
+td:has(select), td:has(input), td:has(.btn), td:has(button) { text-align: left; }

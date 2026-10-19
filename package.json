@@ -16,6 +16,7 @@
     "migrate": "tsx src/db/migrate.ts",
     "cli": "tsx src/cli.ts",
     "test": "vitest run",
+    "audit": "node scripts/audit.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

@@ -44,15 +44,16 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
   const [draft, setDraft] = useState('');
 
   const [newPeople, setNewPeople] = useState<any[]>([]);
+  const [showAllPeople, setShowAllPeople] = useState(false);
   /** Which new person has the team picker open. */
   const [picking, setPicking] = useState<string | null>(null);
   const [pickTeam, setPickTeam] = useState('');
 
   const load = () => Promise.all([
     api.settingsMailboxes().then(setData),
-    api.newPeople().then((r) => setNewPeople(r.people ?? [])).catch(() => setNewPeople([])),
+    api.newPeople(showAllPeople).then((r) => setNewPeople(r.people ?? [])).catch(() => setNewPeople([])),
   ]).catch((e) => setError(e.message));
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(); }, [showAllPeople]);
 
   async function act(fn: () => Promise<any>, msg: string) {
     setError(null);
@@ -78,19 +79,34 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
       {notice && <div className="banner info">{notice}</div>}
       {error && <div className="banner danger">{error}</div>}
 
-      {newPeople.length > 0 && (
-        <div className="card" style={{ marginBottom: 14 }}>
+      <div className="card" style={{ marginBottom: 14 }}>
           <div className="section-title">
-            <span>Recently added <span className="muted">· in the dashboard, not yet watched</span></span>
+            <span>
+              {showAllPeople ? 'Everyone not watched' : 'Recently added'}
+              <span className="muted"> · in the dashboard, not yet watched{newPeople.length ? ` · ${newPeople.length}` : ''}</span>
+            </span>
+            <button className="btn small" onClick={() => setShowAllPeople((v) => !v)}>
+              {showAllPeople ? 'Show only new' : 'Show everyone'}
+            </button>
           </div>
           <div className="muted" style={{ padding: '10px 14px 0', fontSize: 12.5 }}>
-            People who appeared in the dashboard in the last two weeks. Adding one starts reading
-            that mailbox, so it is a choice rather than something a sync does on its own. Rows
-            disappear after two weeks whether or not they are added.
+            {showAllPeople
+              ? 'Everyone active in the dashboard whose mailbox is not being watched, including people who were already there before this tool started.'
+              : 'People who appeared in the dashboard in the last two weeks. Rows disappear after two weeks whether or not they are added.'}
+            {' '}Adding one starts reading that mailbox, so it is a choice rather than something a sync does on its own.
           </div>
           <table>
             <thead><tr><th>Person</th><th>Role</th><th>Appeared</th><th></th></tr></thead>
             <tbody>
+              {newPeople.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="muted">
+                    {showAllPeople
+                      ? 'Everyone in the dashboard is already being watched.'
+                      : 'Nobody new in the last two weeks. Joiners appear here after the daily sync at 18:00.'}
+                  </td>
+                </tr>
+              )}
               {newPeople.map((p) => (
                 <tr key={p.email}>
                   <td className="mono">{p.email}{p.name ? ` · ${p.name}` : ''}</td>
@@ -142,8 +158,7 @@ function Mailboxes({ onChanged }: { onChanged: () => void }) {
               ))}
             </tbody>
           </table>
-        </div>
-      )}
+      </div>
 
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="section-title">

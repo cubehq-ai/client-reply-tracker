@@ -76,7 +76,17 @@ export function prepareHtml(html: string, showImagesOrOptions: boolean | Prepare
     }
   }
 
-  let blockedImages = 0;
+  // Tracking pixels are not images anyone asked to see. Offering to load one
+  // reads as a broken button — the notice disappears and nothing appears —
+  // and taking the offer pings the sender's tracker. Drop them outright.
+  for (const img of [...doc.querySelectorAll('img')]) {
+    if (isTrackingPixel(img)) {
+      const cell = img.parentElement;
+      img.remove();
+      releaseReservedSpace(cell);
+    }
+  }
+
   if (!showImages) {
     for (const img of [...doc.querySelectorAll('img')]) {
       const src = img.getAttribute('src') ?? '';
@@ -88,10 +98,11 @@ export function prepareHtml(html: string, showImagesOrOptions: boolean | Prepare
         // reserves a column too, which pushes the rest of the table right.
         clearDimensions(img);
         clearAncestorDimensions(img);
-        blockedImages += 1;
       }
     }
   }
+
+  normaliseFontSizes(doc.body);
 
   dropEmptyCells(doc.body);
 
@@ -166,11 +177,73 @@ export function prepareHtml(html: string, showImagesOrOptions: boolean | Prepare
 
   collapseBlankSpace(doc.body);
 
+  // Counted after the split, not before: an image held back inside quoted
+  // history is not on screen, so offering to load it points at nothing.
+  const blockedImages = doc.body.querySelectorAll('img[data-blocked]').length;
+
   return {
     visible: doc.body.innerHTML.trim(),
     quoted: quotedParts.join(''),
     blockedImages,
   };
+}
+
+/**
+ * A 1x1 beacon, or an image whose URL is a known open-tracker. Senders ship
+ * these in almost every mail; they carry nothing to look at.
+ */
+function isTrackingPixel(img: Element): boolean {
+  const src = img.getAttribute('src') ?? '';
+  if (!/^https?:/i.test(src)) return false;
+  if (/\b(wf\/open|open\.aspx|\/track(ing)?\/open|pixel|beacon|\.gif\?.*(uid|eid|mid)=)/i.test(src)) return true;
+
+  const box = (name: string): number | null => {
+    const attr = img.getAttribute(name);
+    const style = img.getAttribute('style') ?? '';
+    const styled = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([\\d.]+)\\s*px`, 'i').exec(style);
+    const raw = styled?.[1] ?? attr;
+    if (raw == null || !/^[\d.]+$/.test(raw.trim())) return null;
+    return Number(raw);
+  };
+  const w = box('width');
+  const h = box('height');
+  return w != null && h != null && w <= 3 && h <= 3;
+}
+
+/**
+ * Brings the sender's own font sizes into the app's range.
+ *
+ * Mail is authored against a 16px default, in whatever unit the sender's
+ * client uses — 9pt to 14pt is normal in this corpus — so an untouched body
+ * renders at a size unrelated to everything around it, and a different one
+ * per sender. Scale each declaration by the same factor the base is scaled
+ * by, so relative emphasis inside the message survives while the message as
+ * a whole sits at the app's size.
+ */
+const MAIL_BASE_PX = 13.5;
+const BROWSER_BASE_PX = 16;
+
+function normaliseFontSizes(root: HTMLElement): void {
+  const scale = MAIL_BASE_PX / BROWSER_BASE_PX;
+
+  for (const el of [...root.querySelectorAll<HTMLElement>('[style*="font-size" i]')]) {
+    const style = el.getAttribute('style') ?? '';
+    el.setAttribute(
+      'style',
+      style.replace(/(^|;)(\s*font-size\s*:\s*)([\d.]+)\s*(px|pt)/gi, (whole, lead, prop, value, unit) => {
+        const px = unit.toLowerCase() === 'pt' ? Number(value) * (4 / 3) : Number(value);
+        // Hidden preheader text is sized to nothing on purpose. Scaling it up
+        // would drag a line the sender never meant to show into the message.
+        if (!Number.isFinite(px) || px < 6) return whole;
+        const next = Math.round(Math.min(Math.max(px * scale, 11.5), 22) * 10) / 10;
+        return `${lead}${prop}${next}px`;
+      }),
+    );
+  }
+
+  // <font size="1..7"> is a bucket, not a measurement; the stylesheet's own
+  // size is closer than any of them for body copy.
+  for (const el of [...root.querySelectorAll('font[size]')]) el.removeAttribute('size');
 }
 
 /**

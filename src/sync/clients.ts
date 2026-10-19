@@ -95,7 +95,13 @@ export async function syncClients(source = getClientSource()): Promise<ClientSyn
   for (const rec of records) {
     await tx(async (c) => {
       const amRes = rec.accountManagerEmail
-        ? await c.query<{ id: string }>('SELECT id FROM users WHERE email = $1', [rec.accountManagerEmail])
+        ? await c.query<{ id: string }>(
+            `INSERT INTO users (email, name, role, status)
+             VALUES ($1::citext, split_part($1::text, '@', 1), 'member', 'active')
+             ON CONFLICT (email) DO UPDATE SET updated_at = now()
+             RETURNING id`,
+            [rec.accountManagerEmail],
+          )
         : null;
 
       const clientRes = await c.query<{ id: string }>(

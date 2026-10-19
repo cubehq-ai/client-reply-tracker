@@ -61,6 +61,12 @@ export const config = {
      * unresponded. Anything newer is still in normal working flow.
      */
     unrespondedAfterHours: num('UNRESPONDED_AFTER_HOURS', 12),
+    /**
+     * How long a closed item stays on the No reply needed tab. Older ones are
+     * hidden, not deleted: the record still backs the classifier feedback and
+     * the body purge handles actual retention.
+     */
+    closedVisibleDays: num('CLOSED_VISIBLE_DAYS', 14),
   },
 
   sla: {

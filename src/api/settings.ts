@@ -49,7 +49,7 @@ export async function deleteTeam(user: SessionUser, teamId: number): Promise<voi
 export async function listMailboxes(): Promise<any[]> {
   return query(
     `SELECT mb.id, mb.email, mb.kind, mb.status, mb.managed, mb.added_by,
-            mb.last_synced_at, mb.watch_expiration, mb.last_error,
+            mb.last_synced_at, mb.watch_expiration, mb.last_error, mb.team_source,
             t.id AS team_id, t.name AS team_name,
             u.role,
             (SELECT count(*)::int FROM message_copies mc WHERE mc.mailbox_id = mb.id) AS message_count
@@ -79,22 +79,26 @@ export async function addMailbox(user: SessionUser, input: AddMailboxInput): Pro
 
   await tx(async (c) => {
     const userRes = await c.query<{ id: string }>(
-      `INSERT INTO users (email, name, role, status, team_id)
-       VALUES ($1,$2,$3,'active',$4)
+      `INSERT INTO users (email, name, role, status, team_id, team_source)
+       VALUES ($1,$2,$3,'active',$4, CASE WHEN $4::bigint IS NULL THEN 'dashboard' ELSE 'manual' END)
        ON CONFLICT (email) DO UPDATE SET
          status = 'active',
          team_id = COALESCE(EXCLUDED.team_id, users.team_id),
+         -- Mirrors the mailbox: the Teams page counts members from here, so
+         -- leaving this on 'dashboard' would undo half the assignment.
+         team_source = CASE WHEN $4::bigint IS NULL THEN users.team_source ELSE 'manual' END,
          updated_at = now()
        RETURNING id`,
       [email, email.split('@')[0], input.role ?? 'member', teamId],
     );
     await c.query(
-      `INSERT INTO mailboxes (email, user_id, kind, status, team_id, managed, added_by)
-       VALUES ($1,$2,$3,'active',$4,true,$5)
+      `INSERT INTO mailboxes (email, user_id, kind, status, team_id, managed, added_by, team_source)
+       VALUES ($1,$2,$3,'active',$4,true,$5, CASE WHEN $4::bigint IS NULL THEN 'dashboard' ELSE 'manual' END)
        ON CONFLICT (email) DO UPDATE SET
          kind = EXCLUDED.kind,
          status = 'active',
          team_id = COALESCE(EXCLUDED.team_id, mailboxes.team_id),
+         team_source = CASE WHEN $4::bigint IS NULL THEN mailboxes.team_source ELSE 'manual' END,
          managed = true,
          updated_at = now()`,
       [email, Number(userRes.rows[0]!.id), input.kind ?? 'user', teamId, user.email],
@@ -121,6 +125,7 @@ export async function updateMailbox(
   await query(
     `UPDATE mailboxes SET
        team_id = CASE WHEN $2::boolean THEN $3 ELSE team_id END,
+       team_source = CASE WHEN $2::boolean THEN 'manual' ELSE team_source END,
        status  = COALESCE($4, status),
        kind    = COALESCE($5, kind),
        managed = true,
@@ -130,7 +135,10 @@ export async function updateMailbox(
   );
 
   if (teamId !== undefined) {
-    await query('UPDATE users SET team_id = $2, updated_at = now() WHERE email = $1', [mailbox.email, teamId]);
+    await query(
+      "UPDATE users SET team_id = $2, team_source = 'manual', updated_at = now() WHERE email = $1",
+      [mailbox.email, teamId],
+    );
   }
   // Stop consuming Gmail quota for a mailbox we no longer watch.
   if (patch.status && patch.status !== 'active') await stopWatch(mailbox.email);
@@ -342,7 +350,13 @@ export async function suggestClientsForDomains(domains: string[]): Promise<Map<s
   return out;
 }
 
-/** Senders we could not map, most frequent first — the Unmatched work list. */
+/**
+ * Senders worth linking to a client, most frequent first.
+ *
+ * Anything already closed as `filtered` is excluded: no-reply addresses,
+ * newsletters and cold outreach will never be a client, and at ~70 messages
+ * each they bury the handful of senders that actually need a decision.
+ */
 export async function unmatchedSenders(): Promise<any[]> {
   const rows = await query<any>(
     `SELECT m.from_email, m.from_domain,
@@ -350,7 +364,10 @@ export async function unmatchedSenders(): Promise<any[]> {
             MAX(m.internal_date) AS last_seen
        FROM messages m
        JOIN items i ON i.conversation_id = m.conversation_id
-      WHERE m.direction = 'in' AND i.client_id IS NULL AND i.state <> 'archived'
+      WHERE m.direction = 'in'
+        AND i.client_id IS NULL
+        AND (i.reason IS DISTINCT FROM 'filtered')
+        AND m.filter_reason IS NULL
       GROUP BY m.from_email, m.from_domain
       ORDER BY items DESC, last_seen DESC
       LIMIT 200`,

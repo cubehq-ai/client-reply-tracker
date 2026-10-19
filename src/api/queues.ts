@@ -94,11 +94,17 @@ function visibilityClause(user: SessionUser, view: QueueFilters['view'], params:
   )`;
 }
 
-function queueClause(queue: QueueName, _params: unknown[]): string {
+function queueClause(queue: QueueName, params: unknown[]): string {
   switch (queue) {
-    case 'needs_reply': return "i.state = 'needs_reply'";
-    case 'no_reply_needed': return "i.state = 'no_reply_needed'";
-    default: return 'TRUE';
+    case 'needs_reply':
+      return "i.state = 'needs_reply'";
+    case 'no_reply_needed':
+      // Closed items age off the tab: a list that only ever grows stops being
+      // something anyone reviews.
+      params.push(String(config.org.closedVisibleDays));
+      return `i.state = 'no_reply_needed' AND i.state_since > now() - ($${params.length} || ' days')::interval`;
+    default:
+      return 'TRUE';
   }
 }
 
@@ -305,6 +311,8 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {},
 
   params.push(String(config.org.unrespondedAfterHours));
   const agedIdx = params.length;
+  params.push(String(config.org.closedVisibleDays));
+  const closedIdx = params.length;
 
   // Flag counts are scoped to the tab being viewed, or they would describe
   // items the list cannot show.
@@ -324,6 +332,8 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {},
        LEFT JOIN clients cl ON cl.id = i.client_id
        LEFT JOIN users u ON u.id = i.owner_user_id
       WHERE ${where.join(' AND ')}
+        AND (i.state = 'needs_reply'
+             OR i.state_since > now() - ($${closedIdx} || ' days')::interval)
       GROUP BY i.state, i.reason`,
     params,
   );
