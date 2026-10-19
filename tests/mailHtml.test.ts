@@ -295,3 +295,48 @@ describe('font sizes', () => {
     expect(visible).toContain('tiny');
   });
 });
+
+describe('quoted history', () => {
+  it('folds an Outlook reply whose From: header sits in a wrapper of its own', () => {
+    // Outlook nests the header two levels deep and gives that level no next
+    // sibling, so a climb that stopped at the first dead end left the whole
+    // previous message on screen below the signature.
+    const html = [
+      '<p>Thank you! I have approved these.</p>',
+      '<div><div style="border-top:solid #E1E1E1 1.0pt">',
+      '<p><b>From:</b> Anishikar Singh &lt;anishikar@cubehq.ai&gt;<br>',
+      '<b>Sent:</b> Thursday, October 1, 2026 5:53 AM<br>',
+      '<b>Subject:</b> Re: Please publish</p>',
+      '</div></div>',
+      '<div><div><p>Hi Jennifer,</p><p>We have updated the LinkedIn content plan.</p></div></div>',
+    ].join('');
+
+    const { visible, quoted } = prepareHtml(html, true);
+    expect(visible).toContain('I have approved these');
+    expect(visible).not.toContain('LinkedIn content plan');
+    expect(visible).not.toContain('From:');
+    expect(quoted).toContain('LinkedIn content plan');
+  });
+
+  it('keeps the reply above a Gmail quote', () => {
+    const html =
+      '<div dir="ltr"><div>Thank you</div></div><br>' +
+      '<div class="gmail_quote"><div class="gmail_attr">On Wed, 7 Oct 2026, Khushi wrote:<br></div>' +
+      '<blockquote class="gmail_quote">Here is the meeting link</blockquote></div>';
+    const { visible, quoted } = prepareHtml(html, true);
+    expect(visible).toContain('Thank you');
+    expect(visible).not.toContain('meeting link');
+    expect(quoted).toContain('meeting link');
+  });
+
+  it('shows a forward whose boundary is the top of the message', () => {
+    // There is nothing above the divider, so folding leaves a blank panel.
+    // The forwarded mail is the message.
+    const html =
+      '<div class="gmail_quote"><div class="gmail_attr">---------- Forwarded message ---------<br>' +
+      'From: Victoria &lt;victoria@famolare.test&gt;</div>' +
+      '<blockquote class="gmail_quote"><p>We have made these changes to the product page.</p></blockquote></div>';
+    const { visible } = prepareHtml(html, true);
+    expect(visible).toContain('changes to the product page');
+  });
+});

@@ -35,7 +35,6 @@
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./**/*service-account*.json)",
-      "Bash(git push*)",
       "Bash(rm -rf /*)",
       "Bash(rm -rf ~*)",
       "Bash(gcloud *)",

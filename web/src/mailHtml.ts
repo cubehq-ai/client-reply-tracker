@@ -157,25 +157,49 @@ export function prepareHtml(html: string, showImagesOrOptions: boolean | Prepare
     return best.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING ? el : best;
   }, null);
 
+  // A forward is nothing but the message it carries, so the boundary sits at
+  // the very top and folding everything behind it leaves a blank body. Keep a
+  // copy to fall back to.
+  const beforeFold = doc.body.cloneNode(true) as HTMLElement;
+
   if (earliest) {
-    // Take the node and everything after it, at every level up to the body.
-    // Only following siblings: an ancestor still holds the message written
-    // above the boundary, which must stay visible.
-    let node: Element | null = earliest;
+    // Take the boundary and everything after it, at every level up to the
+    // body. Only following siblings: an ancestor still holds the message
+    // written above the boundary, which must stay visible.
+    //
+    // The climb has to pass through a level that has no next sibling rather
+    // than stop at it. Outlook wraps its "From:" header in a bare <div> of
+    // its own, so the first level up is always a dead end -- treating that
+    // as the end of the quote left the whole previous message on screen,
+    // below the signature, reading as part of the reply.
+    quotedParts.push(earliest.outerHTML);
+    const boundary: Element = earliest;
+    let node: Element | null = boundary;
     while (node && node !== doc.body) {
-      const parent: Element | null = node.parentElement;
-      let sibling: Element | null = node;
+      let sibling: Element | null = node.nextElementSibling;
       while (sibling) {
         const next: Element | null = sibling.nextElementSibling;
         quotedParts.push(sibling.outerHTML);
         sibling.remove();
         sibling = next;
       }
-      node = parent && parent !== doc.body ? parent.nextElementSibling : null;
+      node = node.parentElement;
     }
+    boundary.remove();
   }
 
   collapseBlankSpace(doc.body);
+
+  // Nothing left to read means the boundary was the top of the message, not a
+  // divider inside it. Showing the mail beats showing an empty panel.
+  if (!hasContent(doc.body)) {
+    collapseBlankSpace(beforeFold);
+    return {
+      visible: beforeFold.innerHTML.trim(),
+      quoted: '',
+      blockedImages: beforeFold.querySelectorAll('img[data-blocked]').length,
+    };
+  }
 
   // Counted after the split, not before: an image held back inside quoted
   // history is not on screen, so offering to load it points at nothing.
@@ -186,6 +210,12 @@ export function prepareHtml(html: string, showImagesOrOptions: boolean | Prepare
     quoted: quotedParts.join(''),
     blockedImages,
   };
+}
+
+/** Whether anything would actually render: text, an image or a rule. */
+function hasContent(root: HTMLElement): boolean {
+  if ((root.textContent ?? '').replace(/\u00a0/g, ' ').trim() !== '') return true;
+  return root.querySelector('img, hr, table, video, picture') != null;
 }
 
 /**
