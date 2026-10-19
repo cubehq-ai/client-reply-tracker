@@ -68,6 +68,13 @@ export function App() {
     return () => window.removeEventListener('rq:views-changed', loadViews);
   }, [loadViews]);
 
+  // Poll health so a worker that dies mid-session is noticed without a reload.
+  useEffect(() => {
+    if (!user) return;
+    const id = setInterval(() => { void api.health().then(setHealth).catch(() => {}); }, 60_000);
+    return () => clearInterval(id);
+  }, [user]);
+
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   const goInbox = (preset: Filters, title = 'Inbox', subtitle = INBOX_SUBTITLE) => {
@@ -135,6 +142,7 @@ export function App() {
       </nav>
 
       <main className="main">
+        <SyncBanner health={health} />
         <ErrorBoundary key={page.kind + (isInbox ? page.title : '')}>
         {isInbox && (
           <Inbox
@@ -225,4 +233,34 @@ function TeamsView({ teams, onPick }: { teams: any[]; onPick: (id: number) => vo
       </div>
     </>
   );
+}
+
+/**
+ * Says out loud when ingestion has stopped. Without this a dead worker is
+ * indistinguishable from a quiet inbox: the dashboard keeps serving its last
+ * snapshot and every number silently goes stale.
+ */
+function SyncBanner({ health }: { health: any }) {
+  const sync = health?.sync;
+  if (!sync) return null;
+
+  if (sync.stale) {
+    return (
+      <div className="banner danger" style={{ marginBottom: 14 }}>
+        <strong>Not syncing.</strong> No mailbox has updated since{' '}
+        {sync.oldestSyncedAt ? new Date(sync.oldestSyncedAt).toLocaleString() : 'ever'}. Everything below is a
+        stale snapshot — start the worker with <span className="mono">npm run worker</span>.
+      </div>
+    );
+  }
+
+  if (sync.staleMailboxes > 0) {
+    return (
+      <div className="banner warn" style={{ marginBottom: 14 }}>
+        {sync.staleMailboxes} of {sync.activeMailboxes} mailboxes have not synced in the last{' '}
+        {sync.thresholdMinutes} minutes. Catching up — counts will keep moving.
+      </div>
+    );
+  }
+  return null;
 }

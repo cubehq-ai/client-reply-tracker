@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Runs the ReplyQueue worker as a launchd agent, so ingestion survives logout
+  and reboot instead of dying with a terminal session.
+
+  Install:
+    cp deploy/com.cubehq.replyqueue.worker.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.cubehq.replyqueue.worker.plist
+
+  Status / logs:
+    launchctl list | grep replyqueue
+    tail -f /tmp/replyqueue-worker.log
+
+  Stop:
+    launchctl unload -w ~/Library/LaunchAgents/com.cubehq.replyqueue.worker.plist
+
+  Configuration comes from .env and .env.internal in WorkingDirectory; no
+  credentials belong in this file.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cubehq.replyqueue.worker</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>exec npm run worker</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__WORKING_DIRECTORY__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <!-- Do not hammer Gmail if it is crash-looping. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/replyqueue-worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/replyqueue-worker.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

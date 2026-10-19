@@ -15,6 +15,7 @@ import { discoverMailboxes } from '../sync/discovery.js';
 import { reconcileOpenItems } from '../sync/reconcile.js';
 import { handlePubSubPush } from '../sync/pubsub.js';
 import { computeMetrics } from './metrics.js';
+import { syncHealth } from './syncHealth.js';
 import { modelStatus, trainLocalClassifier } from '../llm/localClassifier.js';
 import { sendDailyDigests } from '../sync/digest.js';
 import {
@@ -53,9 +54,10 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   app.get('/api/health', async () => {
-    const db = await one<{ ok: number }>('SELECT 1 AS ok');
+    const [db, sync] = await Promise.all([one<{ ok: number }>('SELECT 1 AS ok'), syncHealth()]);
     return {
       ok: db?.ok === 1,
+      sync,
       googleBackend: config.google.serviceAccountFile ? config.google.backend : 'fake',
       sendEnabled: config.safety.sendEnabled,
       gmailWriteEnabled: config.safety.gmailWriteEnabled,
