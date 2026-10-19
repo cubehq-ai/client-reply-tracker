@@ -130,3 +130,69 @@ describe('folding a nested quote header', () => {
     expect(quoted).toBe('');
   });
 });
+
+describe('signature layout after removing inline images', () => {
+  it('removes a cell emptied of its icon so the table closes to the left', () => {
+    const html = '<table><tr><td width="138"><img src="cid:icon@1"></td><td>Jennifer Eichenberger</td></tr></table>';
+    const { visible } = prepareHtml(html, true);
+    const cells = (visible.match(/<td/g) ?? []).length;
+    expect(cells).toBe(1);
+    expect(visible).toContain('Jennifer Eichenberger');
+  });
+
+  it('drops a row left with no cells at all', () => {
+    const html = '<table><tr><td><img src="cid:spacer@1"></td></tr><tr><td>Real content</td></tr></table>';
+    const { visible } = prepareHtml(html, true);
+    expect((visible.match(/<tr/g) ?? []).length).toBe(1);
+    expect(visible).toContain('Real content');
+  });
+
+  it('keeps a cell that still holds a visible image', () => {
+    const html = '<table><tr><td><img src="cid:x@1"><img src="https://x.test/logo.png"></td><td>text</td></tr></table>';
+    const { visible } = prepareHtml(html, true);
+    expect((visible.match(/<td/g) ?? []).length).toBe(2);
+  });
+
+  it('drops a cell left with only a line break, which shows nothing', () => {
+    const html = '<table><tr><td><img src="cid:x@1"><br></td><td>text</td></tr></table>';
+    const { visible } = prepareHtml(html, true);
+    expect((visible.match(/<td/g) ?? []).length).toBe(1);
+  });
+});
+
+describe('blocked images and reserved columns', () => {
+  it('clears the column a blocked image was holding', () => {
+    const html = '<table><tr><td width="343" style="width:257pt"><img src="https://x.test/p.png" width="300"></td><td>Jennifer</td></tr></table>';
+    const { visible } = prepareHtml(html, false);
+    expect(visible).not.toContain('width="343"');
+    expect(visible).not.toMatch(/width:\s*257pt/);
+    expect(visible).toContain('data-blocked');
+  });
+
+  it('leaves the cell alone when it also holds text', () => {
+    const html = '<table><tr><td width="343"><img src="https://x.test/p.png">Logo</td></tr></table>';
+    const { visible } = prepareHtml(html, false);
+    expect(visible).toContain('width="343"');
+  });
+});
+
+describe('empty table cells', () => {
+  it('drops a cell left holding only empty wrappers', () => {
+    const html = '<table><tr><td style="padding:0"><p><span></span></p></td><td>Jennifer</td></tr></table>';
+    const { visible } = prepareHtml(html, true);
+    expect((visible.match(/<td/g) ?? []).length).toBe(1);
+    expect(visible).toContain('Jennifer');
+  });
+
+  it('keeps a deliberate spacer that reserves width', () => {
+    const html = '<table><tr><td style="width:40px"></td><td>x</td></tr></table>';
+    const { visible } = prepareHtml(html, true);
+    expect((visible.match(/<td/g) ?? []).length).toBe(2);
+  });
+
+  it('keeps a cell with a background colour', () => {
+    const html = '<table><tr><td style="background:#f00"></td><td>x</td></tr></table>';
+    const { visible } = prepareHtml(html, true);
+    expect((visible.match(/<td/g) ?? []).length).toBe(2);
+  });
+});

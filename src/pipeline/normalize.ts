@@ -1,4 +1,5 @@
 import type { RawMessage } from '../gmail/types.js';
+import { decodeEntities } from '../lib/html.js';
 
 export interface NormalizedMessage {
   gmailMessageId: string;
@@ -136,7 +137,8 @@ export function normalize(raw: RawMessage, mailbox: string): NormalizedMessage {
     subject,
     normalizedSubject: normalizeSubject(subject),
     internalDate: new Date(raw.internalDateMs),
-    snippet: raw.snippet ?? '',
+    // Gmail returns the snippet HTML-escaped; it is displayed as plain text.
+    snippet: decodeEntities(raw.snippet ?? ''),
     bodyText: body.slice(0, 4000),
     bodyHtml: raw.bodyHtml ?? null,
     cleanedBody: cleanBody(body).slice(0, 4000),

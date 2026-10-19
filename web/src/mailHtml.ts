@@ -33,7 +33,9 @@ function sanitize(html: string): string {
     FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'link', 'meta', 'base'],
     FORBID_ATTR: ['srcset', 'ping', 'formaction'],
     ALLOW_DATA_ATTR: false,
-    ADD_ATTR: ['target'],
+    // width/height on cells and images are layout, not a risk, and dropping
+    // them both breaks tables and hides deliberate spacers from the cleanup.
+    ADD_ATTR: ['target', 'width', 'height', 'align', 'valign', 'bgcolor', 'cellpadding', 'cellspacing'],
   });
 }
 
@@ -44,8 +46,10 @@ export function prepareHtml(html: string, showImages: boolean): PreparedHtml {
   for (const img of [...doc.querySelectorAll('img')]) {
     const src = img.getAttribute('src') ?? '';
     if (src.startsWith('cid:')) {
-      releaseReservedSpace(img.parentElement);
+      // Remove first: the cell has to be empty before it can be judged empty.
+      const cell = img.parentElement;
       img.remove();
+      releaseReservedSpace(cell);
     }
   }
 
@@ -57,12 +61,16 @@ export function prepareHtml(html: string, showImages: boolean): PreparedHtml {
         img.removeAttribute('src');
         img.setAttribute('data-blocked', '1');
         // Without this the image keeps the space it was designed to fill,
-        // so a signature becomes a screen of empty boxes.
+        // so a signature becomes a screen of empty boxes. The cell holding it
+        // reserves a column too, which pushes the rest of the table right.
         clearDimensions(img);
+        clearAncestorDimensions(img);
         blockedImages += 1;
       }
     }
   }
+
+  dropEmptyCells(doc.body);
 
   // Links leave the app, and must not hand it the opener.
   for (const a of [...doc.querySelectorAll('a[href]')]) {
@@ -177,16 +185,66 @@ function clearDimensions(el: Element): void {
 
 /**
  * A table cell sized for an image it no longer holds leaves a tall empty
- * column, which is what turns an Outlook signature into a stretched grid.
+ * column, which is what turns an Outlook signature into a stretched grid
+ * pushed away from the left margin.
+ *
+ * Clearing the width is not enough: the cell still occupies a column. An
+ * emptied cell is removed outright, and a row left with no cells goes too.
  */
-function releaseReservedSpace(cell: Element | null): void {
-  let el: Element | null = cell;
-  // Walk up while the ancestor exists only to hold that image.
+function releaseReservedSpace(start: Element | null): void {
+  let el: Element | null = start;
+
+  // Walk upward: an icon usually sits in a <p> inside a <td>, so removing the
+  // paragraph leaves the cell still holding its column. Each level that ends
+  // up empty is cleared and dropped, until something with content is reached.
+  for (let depth = 0; el && depth < 5; depth += 1) {
+    if (!/^(TD|TH|DIV|P|SPAN|TR|TBODY|TABLE)$/.test(el.tagName)) break;
+    if ((el.textContent ?? '').replace(/\u00a0/g, ' ').trim() !== '') break;
+    // Still displays something of its own.
+    if (el.querySelector('img, hr, input, video')) break;
+
+    const parent: Element | null = el.parentElement;
+    clearDimensions(el);
+    if (el.children.length === 0) el.remove();
+    el = parent;
+  }
+}
+
+/**
+ * Clears the width and height of ancestors that exist only to hold one image.
+ * A blocked headshot in an Outlook signature otherwise keeps its whole column,
+ * pushing the text half of the table away from the left margin.
+ */
+function clearAncestorDimensions(img: Element): void {
+  let el: Element | null = img.parentElement;
   for (let depth = 0; el && depth < 3; depth += 1) {
     if (!/^(TD|TH|DIV|P|SPAN)$/.test(el.tagName)) break;
-    const text = (el.textContent ?? '').replace(/\u00a0/g, ' ').trim();
-    if (text !== '') break;
+    if ((el.textContent ?? '').replace(/\u00a0/g, ' ').trim() !== '') break;
     clearDimensions(el);
     el = el.parentElement;
+  }
+}
+
+/**
+ * Removes table cells that hold nothing and reserve nothing.
+ *
+ * An Outlook signature leaves behind wrappers like <p><span></span></p> once
+ * its inline image is stripped. The cell then carries no width of its own, but
+ * table auto-layout still hands it a share of the row, which is what pushes
+ * the signature away from the left margin.
+ *
+ * A cell with an explicit width, height or background is left alone: in a
+ * designed email those are deliberate spacers.
+ */
+function dropEmptyCells(root: HTMLElement): void {
+  for (const cell of [...root.querySelectorAll('td, th')]) {
+    if ((cell.textContent ?? '').replace(/\u00a0/g, ' ').trim() !== '') continue;
+    if (cell.querySelector('img, hr, input, video, table')) continue;
+    if (cell.hasAttribute('width') || cell.hasAttribute('height')) continue;
+    if (/(^|;)\s*(min-|max-)?(width|height|background)/i.test(cell.getAttribute('style') ?? '')) continue;
+
+    const row = cell.parentElement;
+    cell.remove();
+    if (row && row.tagName === 'TR' && row.children.length === 0) row.remove();
   }
 }
