@@ -82,6 +82,20 @@ export async function getThread(user: SessionUser, itemId: number, opts: { refre
          FROM messages m
          JOIN items i ON i.conversation_id = m.conversation_id
         WHERE i.id = $1
+          -- A draft left behind after the reply was actually sent is a copy
+          -- of a message already in the thread. People rarely clear them, and
+          -- shown here it reads as a second, unsent reply. A draft with no
+          -- send after it is kept: that one says someone started a reply and
+          -- has not finished it, which is worth seeing.
+          AND NOT (
+            m.is_draft AND EXISTS (
+              SELECT 1 FROM messages s
+               WHERE s.conversation_id = m.conversation_id
+                 AND s.direction = 'out'
+                 AND s.is_draft = false
+                 AND s.internal_date >= m.internal_date
+            )
+          )
         ORDER BY m.internal_date ASC`,
       [itemId],
     ),
