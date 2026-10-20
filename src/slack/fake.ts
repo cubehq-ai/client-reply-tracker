@@ -44,7 +44,21 @@ export class FakeSlackClient implements SlackClient {
     // Top-level only, matching Slack: thread replies come from replies().
     const top = all.filter((m) => m.threadTs === null || m.threadTs === m.ts);
     const after = opts.oldest ? top.filter((m) => Number(m.ts) > Number(opts.oldest)) : top;
-    return { items: after, cursor: null };
+    // Slack stamps a parent with its reply count, which is how a caller knows
+    // a thread is worth re-reading. A fake that omits it lets a sync bug that
+    // never fetches replies pass its tests.
+    return {
+      items: after.map((m) => {
+        const replies = all.filter((r) => r.threadTs === m.ts && r.ts !== m.ts);
+        if (replies.length === 0) return m;
+        return {
+          ...m,
+          replyCount: replies.length,
+          latestReplyTs: replies[replies.length - 1]!.ts,
+        };
+      }),
+      cursor: null,
+    };
   }
 
   async replies(channel: string, threadTs: string): Promise<SlackPage<SlackMessage>> {
