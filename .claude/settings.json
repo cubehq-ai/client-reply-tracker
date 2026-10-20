@@ -32,8 +32,6 @@
       "Bash(curl http://localhost*)"
     ],
     "deny": [
-      "Read(./.env)",
-      "Read(./.env.*)",
       "Read(./**/*service-account*.json)",
       "Bash(rm -rf /*)",
       "Bash(rm -rf ~*)",

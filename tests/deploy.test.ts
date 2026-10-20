@@ -114,3 +114,27 @@ describe('no auth bypass ships', () => {
     expect(auth).not.toMatch(/DEV_AUTH_BYPASS|devUserEmail/);
   });
 });
+
+describe('the compiled build is complete', () => {
+  it('ships the .sql migrations, which tsc does not emit', async () => {
+    // tsc compiles TypeScript and copies nothing else, so dist had no
+    // migrations directory and `node dist/src/db/migrate.js` died with
+    // ENOENT — on Railway that stopped the web service booting at all,
+    // because migrations run before the server.
+    const { readdirSync, existsSync } = await import('node:fs');
+    const src = new URL('../src/db/migrations/', import.meta.url);
+    const dist = new URL('../dist/src/db/migrations/', import.meta.url);
+
+    const sql = readdirSync(src).filter((f) => f.endsWith('.sql'));
+    expect(sql.length).toBeGreaterThan(0);
+
+    // Only meaningful after a build; skip rather than fail in a bare checkout.
+    if (!existsSync(new URL('../dist/src/db/migrate.js', import.meta.url))) return;
+    const shipped = readdirSync(dist).filter((f) => f.endsWith('.sql'));
+    expect(shipped.sort()).toEqual(sql.sort());
+  });
+
+  it('builds the migrations copy into the build script', () => {
+    expect(pkg.scripts.build).toContain('copy:sql');
+  });
+});

@@ -7,7 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run build:web",
+    "build": "tsc -p tsconfig.json && npm run copy:sql && npm run build:web",
     "build:web": "vite build",
     "dev": "tsx watch src/api/server.ts",
     "dev:web": "vite",
@@ -21,7 +21,8 @@
     "start": "node dist/src/api/server.js",
     "start:worker": "node dist/src/worker/index.js",
     "migrate:prod": "node dist/src/db/migrate.js",
-    "jobs-qa": "tsx scripts/jobs-qa.mjs"
+    "jobs-qa": "tsx scripts/jobs-qa.mjs",
+    "copy:sql": "node scripts/copy-sql.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
