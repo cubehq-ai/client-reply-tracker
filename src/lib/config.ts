@@ -106,6 +106,21 @@ export const config = {
     employeesQuery: str('INTERNAL_DB_EMPLOYEES_QUERY'),
   },
 
+  /**
+   * Slack ingestion. A user token (xoxp), never a bot token: the work is read
+   * as the account that sits in the client channels. Which account that is
+   * must not matter -- it is read from auth.test at startup and swapped later
+   * for a shared one.
+   */
+  slack: {
+    userToken: str('SLACK_USER_TOKEN'),
+    sendEnabled: bool('SLACK_SEND_ENABLED', false),
+    /** Minutes of quiet before the LLM window runs on a channel. */
+    debounceMinutes: num('SLACK_DEBOUNCE_MINUTES', 15),
+    /** Gap that ends a run of consecutive client messages. */
+    groupGapMinutes: num('SLACK_GROUP_GAP_MINUTES', 10),
+  },
+
   safety: {
     sendEnabled: bool('SEND_ENABLED', false),
     gmailWriteEnabled: bool('GMAIL_WRITE_ENABLED', false),
@@ -129,6 +144,11 @@ export function fixturesEnabled(): boolean {
 /** The fake backend is used unless a key file is present AND backend=real. */
 export function useRealGoogle(): boolean {
   return config.google.backend === 'real' && config.google.serviceAccountFile !== '';
+}
+
+/** Slack is off entirely without a token: no sync, no network, tab shows "Not connected". */
+export function slackEnabled(): boolean {
+  return config.slack.userToken !== '';
 }
 
 export function useRealClassifier(): boolean {

@@ -142,3 +142,74 @@ Replaces SPEC §4 steps 3–5. For every new external message, stop at the first
 - `items`: replace `state` enum with `needs_reply | no_reply_needed`; add `reason`, `low_confidence`, `unmatched_client`, `muted`; drop `snoozed_until`, `intent`, `awaiting_client`, `priority`.
 - Add table `contacted_domains(domain PK, first_sent_at, last_sent_at, is_free_email_domain)` and `contacted_addresses(email PK, first_sent_at, last_sent_at)` for free email domains.
 - Add tests with fixtures for each filtering branch: client in Promotions (kept), newsletter (filtered), cold outreach from never-contacted domain (filtered), new person from previously contacted domain (unmatched, needs_reply), client "Thanks!" (not_needed), client question after our reply (needs_reply), client reply on muted thread (stays no_reply_needed).
+
+
+## Override: Slack ingestion (build now)
+
+### Access
+- Auth: Slack **user token** in env `SLACK_USER_TOKEN` (xoxp). No bot token, no Socket Mode, ignore any xapp token.
+- Scopes available: channels:read, channels:history, groups:read, groups:history, users:read, users:read.email, reactions:read, team:read, chat:write.
+- The token currently belongs to a test user; later it is swapped for a shared account that is in every client channel. Nothing in code may depend on which user owns the token. Read the owner via `auth.test` at startup.
+- Build `src/slack/` with a real client (Slack Web API over fetch, honour 429 Retry-After, cursor pagination) and a fake client with fixtures, same pattern as `src/gmail/`. Tests use the fake only. If `SLACK_USER_TOKEN` is empty, Slack sync is disabled and the Slack tab shows "Not connected".
+- Use the existing seam in `src/sources/types.ts`; items keep `source = 'slack'`.
+
+### Channels and client mapping
+- Sync job lists channels the token owner is a member of (`users.conversations`, public + private).
+- Store `slack_channels(id, name, is_private, is_shared, client_id, mapping_source[auto|manual], watched bool, last_synced_ts)`.
+- Map channel → client, first match wins:
+  1. Manual mapping set in Settings.
+  2. Email domains of external members (users with a `team_id` different from our team, or email not on an org domain) matched against `client_domains` / `client_contacts`. If members map to exactly one client, use it; if several, leave unmapped.
+  3. Otherwise unmapped.
+- Only channels with a client mapping are watched by default. Settings → "Clients & domains" gets a Slack channels section: list channels, set or change client, toggle watched.
+- Internal user = same `team_id` as ours (from `team.info` / `auth.test`) or email on an org domain. Everyone else is external. Cache users in `slack_users(id, team_id, email, name, is_internal, is_bot)`; refresh daily. Bot and app messages and channel join/leave/topic messages are ignored.
+
+### Sync
+- Poll every 2 minutes per watched channel with `conversations.history(oldest = last_synced_ts)` plus `conversations.replies` for threads with new activity. Initial backfill: last `BACKFILL_DAYS` days.
+- Store messages in the existing `messages` table (or a `slack_messages` table if cleaner; log the choice) with: channel_id, ts, thread_ts, user_id, is_internal, text, reactions, edited, deleted.
+- Handle edits (update text) and deletions (mark deleted; a deleted client message closes its item with reason `filtered`).
+
+### Reply detection — same two states as email (needs_reply | no_reply_needed)
+Unit of work = one channel. Items are per pending client message group, not per channel.
+
+Deterministic rules (no LLM):
+1. Thread reply: an internal message with `thread_ts` equal to a client message's ts (or in the same thread after it) → that client message is replied.
+2. Internal ✅ (`white_check_mark`, `heavy_check_mark`) reaction on a client message → replied.
+3. A client message group = consecutive client messages from the same user with no internal message in between, each within 10 minutes of the previous. One item per group.
+4. Exactly one pending client group in the channel and an internal top-level message after it (not @mentioning only colleagues) → replied.
+5. An internal top-level message that @mentions only internal users is internal chatter and replies to nothing.
+
+LLM window (only when rules 1–5 don't settle it, i.e. 2+ pending client groups and a top-level internal message after them):
+- Debounce: run once the channel has had no new messages for 15 minutes.
+- Send the messages since the last fully resolved point (max 30) with ids, author name, internal/external, timestamps, thread markers.
+- Ask the model to return strict JSON: `{"unanswered_client_message_ids": [...], "answered_client_message_ids": [...]}`. One internal message may answer several client messages.
+- Without `ANTHROPIC_API_KEY`: mark every client group that has an internal top-level message after it as replied with `low_confidence = true`, and log it.
+
+Needs-reply classification:
+- Every pending client group goes through the same classifier as email (scored rule, thread context, embeddings, LLM). Acknowledgements ("thanks", "👍", "noted") → no_reply_needed, reason not_needed, and also mark earlier pending groups from the same client in that channel as replied.
+- A client message that is only an emoji or a reaction-style word → no_reply_needed.
+- Unsure → needs_reply with low_confidence.
+
+Transitions: new client message in a channel with a closed item for that group → new item (do not reopen old groups unless it is a thread reply to them, in which case reopen that item).
+
+### Reply from dashboard
+- Composer for Slack items posts with `chat.postMessage` as a thread reply (`thread_ts` = the client message ts) so it is always detectable.
+- Dry-run by default: `SLACK_SEND_ENABLED=false` logs the payload instead of posting. Never post during development or tests.
+- Show in the UI that the reply posts as the token owner (name from `auth.test`).
+
+### UI
+- Enable the Slack tab. Same two tabs (Needs reply / No reply needed), same filters, plus channel filter.
+- Row shows channel name, client, author, message text (first 2 lines), age, and a link to the message (`chat.getPermalink`).
+- Item view shows the surrounding channel messages (10 before, all after) and the thread if any.
+
+### Tests (fake client, fixtures)
+- Thread reply closes item.
+- ✅ reaction closes item.
+- Burst of 3 client messages + 1 internal message → one item, replied.
+- Two pending groups + one internal message → LLM window path (fake model) returns both answered.
+- Internal message @mentioning only a colleague does not close the client item.
+- Client "thanks 👍" → no_reply_needed and earlier pending groups closed.
+- Unmapped channel is not watched; manual mapping makes it watched and backfills.
+- Token missing → Slack disabled, no network calls.
+
+### Finish
+- Update docs/STATUS.md with: how Slack is configured, how to swap to the shared account's token (replace `SLACK_USER_TOKEN`, restart, run channel sync), and any channels left unmapped.
