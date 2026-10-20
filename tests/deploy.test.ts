@@ -55,4 +55,14 @@ describe('railway configuration', () => {
     expect(procfile).toMatch(/^worker:/m);
     expect(procfile.match(/migrate:prod/g) ?? []).toHaveLength(1);
   });
+
+  it('declares exactly two processes and carries no comments', () => {
+    // Railway reads any "name: command" line as a process. A comment that
+    // happened to contain a colon became a third service called
+    // "# Migrations run in the ...", which then tried to boot.
+    const lines = procfile.split('\n').map((l) => l.trim()).filter(Boolean);
+    expect(lines).toHaveLength(2);
+    expect(lines.some((l) => l.startsWith('#'))).toBe(false);
+    for (const l of lines) expect(l).toMatch(/^(web|worker): \S/);
+  });
 });

@@ -476,6 +476,10 @@ and sends every digest twice. `railway.json` pins `numReplicas: 1`; keep it.
 Migrations run in the web service only — both racing is worse than the worker
 starting a few seconds before a new column exists.
 
+The `Procfile` carries no comments. Railway reads any `name: command` line as a
+process, and a comment containing a colon was picked up as a third service
+called "# Migrations run in the ...". Keep it to the two process lines.
+
 ### Environment
 Everything in `.env.example`. The ones without which it will not work:
 `DATABASE_URL`, `GOOGLE_BACKEND=real`, `GOOGLE_SERVICE_ACCOUNT_FILE` (or the
