@@ -44,9 +44,10 @@ import { inspectInternalDb, testInternalDb } from '../sync/internalDb.js';
 import { checkUnrespondedItems } from '../sync/hourly.js';
 import { createRule, deleteRule, previewRule, reapplyRules, updateRule } from './rulesApi.js';
 import { listMatchRules } from '../pipeline/rules.js';
+import { resolveWebDist } from '../lib/webDist.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const webDist = join(here, '..', '..', 'web', 'dist');
+const webDist = resolveWebDist(here);
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });

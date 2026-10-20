@@ -195,6 +195,11 @@ await page.fill('input.toolbar-search', '');
 await page.waitForTimeout(500);
 note(await page.locator('.toolbar-filters .multiselect-trigger').count() >= 2, 'clients has service and manager filters');
 
+// The deployed app once served the "not built yet" placeholder, which still
+// answers 200 — so check what came back, not that something did.
+const rootHtml = await page.evaluate(() => document.documentElement.outerHTML.slice(0, 600));
+note(!/not built yet/i.test(rootHtml), 'serves the dashboard, not the API placeholder');
+
 note(pageErrors.length === 0, `no console errors${pageErrors.length ? `: ${pageErrors.join(' ;; ')}` : ''}`);
 
 await browser.close();
