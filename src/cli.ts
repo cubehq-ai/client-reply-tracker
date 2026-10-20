@@ -24,6 +24,30 @@ import { loadOrgContext } from './pipeline/context.js';
 
 const commands: Record<string, () => Promise<unknown>> = {
   migrate: () => migrate(),
+  /**
+   * Change a password without a shell into the database.
+   *
+   *   npm run cli set-password -- someone@cubehq.ai 'new password'
+   *
+   * The app is reachable from the internet once it is deployed, and the
+   * seeded password is the only thing in front of real client mail; there
+   * was no way to change it short of writing the hash by hand.
+   */
+  'set-password': async () => {
+    const [email, password] = [process.argv[3], process.argv[4]];
+    if (!email || !password) throw new Error("usage: set-password <email> '<password>'");
+    if (password.length < 12) throw new Error('use at least 12 characters');
+    const { hashPassword } = await import('./api/auth.js');
+    const rows = await query<{ email: string }>(
+      'UPDATE users SET password_hash = $2 WHERE lower(email) = lower($1) RETURNING email',
+      [email, await hashPassword(password)],
+    );
+    if (rows.length === 0) throw new Error(`no user with email ${email}`);
+    // Every existing session keeps working otherwise, which defeats the point
+    // of changing the password.
+    const killed = await query('DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE lower(email) = lower($1)) RETURNING id', [email]);
+    return { updated: rows[0]!.email, sessionsEnded: killed.length };
+  },
   seed: async () => {
     await seedReferenceData();
     await discoverMailboxes();

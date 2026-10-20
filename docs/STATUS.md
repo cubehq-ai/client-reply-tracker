@@ -518,6 +518,19 @@ worked.
 | `digests` | 08:00 Mon–Fri | owner and manager digests |
 | `sync-teams` | 18:00 | teams and membership from the dashboard |
 
+### After the first deploy
+1. Generate a domain on the **web** service only (Settings - Networking).
+   The worker serves nothing and needs no domain.
+2. Change the seeded password immediately — the app is now reachable from the
+   internet and that password is the only thing in front of real client mail:
+   ```
+   npm run cli set-password -- dev@cubehq.ai 'a long passphrase'
+   ```
+   Run it against the production database (Railway shell, or locally with
+   `DATABASE_URL` set to production). It ends every existing session too.
+3. `npm run jobs-qa` to confirm all 15 scheduled jobs run in the new
+   environment.
+
 ### Known gaps at deploy time
 - **No Pub/Sub.** `PUBSUB_TOPIC` is unset, so mail arrives on the 10-minute
   poll rather than in seconds. `renew-watches` no-ops until it is set.
