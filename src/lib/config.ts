@@ -53,6 +53,13 @@ export const config = {
 
   google: {
     serviceAccountFile: str('GOOGLE_SERVICE_ACCOUNT_FILE'),
+    /**
+     * The key itself, for places with no filesystem to put it on.
+     * A container has no file to point GOOGLE_SERVICE_ACCOUNT_FILE at
+     * without a volume or a boot-time write, so the JSON can be pasted
+     * into a variable instead. The file wins if both are set.
+     */
+    serviceAccountJson: str('GOOGLE_SERVICE_ACCOUNT_JSON'),
     adminSubject: str('GOOGLE_ADMIN_SUBJECT'),
     /** "real" only takes effect when a key file is actually configured. */
     backend: str('GOOGLE_BACKEND', 'fake') as 'real' | 'fake',
@@ -161,7 +168,8 @@ export function fixturesEnabled(): boolean {
 
 /** The fake backend is used unless a key file is present AND backend=real. */
 export function useRealGoogle(): boolean {
-  return config.google.backend === 'real' && config.google.serviceAccountFile !== '';
+  return config.google.backend === 'real'
+    && (config.google.serviceAccountFile !== '' || config.google.serviceAccountJson !== '');
 }
 
 /** Slack is off entirely without a token: no sync, no network, tab shows "Not connected". */

@@ -17,11 +17,41 @@ interface KeyFile { client_email: string; private_key: string }
 let cachedKey: KeyFile | null = null;
 function keyFile(): KeyFile {
   if (cachedKey) return cachedKey;
-  if (!config.google.serviceAccountFile) {
-    throw new Error('GOOGLE_SERVICE_ACCOUNT_FILE is not set; cannot use the real Google backend');
+  // A file when there is a filesystem to keep one on, the JSON itself when
+  // there is not -- a container has nowhere to put the key without a volume.
+  const { serviceAccountFile: file, serviceAccountJson: inline } = config.google;
+  if (!file && !inline) {
+    throw new Error(
+      'Neither GOOGLE_SERVICE_ACCOUNT_FILE nor GOOGLE_SERVICE_ACCOUNT_JSON is set; '
+      + 'cannot use the real Google backend',
+    );
   }
-  cachedKey = JSON.parse(readFileSync(config.google.serviceAccountFile, 'utf8')) as KeyFile;
+
+  const raw = file ? readKeyFile(file) : inline;
+  try {
+    cachedKey = JSON.parse(raw) as KeyFile;
+  } catch {
+    throw new Error(
+      `The service account key is not valid JSON (${file ? `file ${file}` : 'GOOGLE_SERVICE_ACCOUNT_JSON'}).`,
+    );
+  }
+  if (!cachedKey.client_email || !cachedKey.private_key) {
+    throw new Error('The service account key has no client_email or private_key.');
+  }
   return cachedKey;
+}
+
+/** Reads the key file, saying which path failed rather than just ENOENT. */
+function readKeyFile(path: string): string {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (err) {
+    throw new Error(
+      `Could not read the service account key at ${path}. `
+      + 'In a container there is usually no such file: paste the key into '
+      + `GOOGLE_SERVICE_ACCOUNT_JSON instead. (${(err as Error).message})`,
+    );
+  }
 }
 
 /** One impersonated JWT per subject. Keys never leave the server (SPEC 11). */
