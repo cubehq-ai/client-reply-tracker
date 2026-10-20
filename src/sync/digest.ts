@@ -139,7 +139,10 @@ export async function sendImmediateAlerts(): Promise<number> {
 
   const n = getNotifier();
   for (const r of rows) {
-    const to = r.owner_email ?? config.server.devUserEmail;
+    // No owner means nobody to tell; sending it to a developer's address was
+    // a stand-in that would have gone out for real once sending is enabled.
+    const to = r.owner_email;
+    if (!to) continue;
     await n.send(to, `Overdue: ${r.client_name ?? 'unmatched'} — ${r.subject}`,
       `This has passed its SLA and is still waiting.\n\nClient: ${r.client_name ?? 'unmatched'}\nSubject: ${r.subject}`);
     await query("INSERT INTO audit_log (user_email, action, item_id, payload) VALUES (NULL,'immediate_alert',$1,$2)", [

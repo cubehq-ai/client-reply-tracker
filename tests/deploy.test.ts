@@ -81,3 +81,36 @@ describe('a deployed service without DATABASE_URL', () => {
     expect(out).toMatch(/every service has its own variables/);
   });
 });
+
+describe('.env.example matches what the app reads', () => {
+  it('documents every variable, and documents nothing dead', async () => {
+    // A sample file that drifts from the code is worse than none: it invites
+    // people to set variables that do nothing, and hides ones that matter.
+    const { readFileSync } = await import('node:fs');
+    const cfg = readFileSync(new URL('../src/lib/config.ts', import.meta.url), 'utf8');
+    const read = new Set([...cfg.matchAll(/(?:str|num|bool|list)\('([A-Z_]+)'/g)].map((m) => m[1]!));
+    const example = new Set(
+      [...readFileSync(new URL('../.env.example', import.meta.url), 'utf8').matchAll(/^([A-Z_]+)=/gm)]
+        .map((m) => m[1]!),
+    );
+
+    // Read directly from process.env rather than through config helpers.
+    read.add('DNS_FALLBACK_SERVERS');
+    // Test-only or legacy aliases, deliberately undocumented.
+    for (const k of ['FIXTURES_ENABLED', 'MONGO_URL', 'DB_NAME', 'CLIENT_DB_URL',
+      'INTERNAL_DB_URL', 'INTERNAL_DB_CLIENTS_QUERY', 'INTERNAL_DB_EMPLOYEES_QUERY']) read.delete(k);
+
+    expect([...example].filter((k) => !read.has(k)), 'documented but never read').toEqual([]);
+    expect([...read].filter((k) => !example.has(k)), 'read but undocumented').toEqual([]);
+  });
+});
+
+describe('no auth bypass ships', () => {
+  it('has no development login shortcut left in the code', async () => {
+    // It was double-gated, but a deployed app with a public URL should not
+    // contain a path that signs someone in without a password at all.
+    const { readFileSync } = await import('node:fs');
+    const auth = readFileSync(new URL('../src/api/auth.ts', import.meta.url), 'utf8');
+    expect(auth).not.toMatch(/DEV_AUTH_BYPASS|devUserEmail/);
+  });
+});

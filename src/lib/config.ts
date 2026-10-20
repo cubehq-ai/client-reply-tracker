@@ -118,8 +118,6 @@ export const config = {
   internalMongo: {
     url: str('INTERNAL_MONGO_URL') || str('MONGO_URL'),
     db: str('INTERNAL_MONGO_DB') || str('DB_NAME'),
-    clientsCollection: str('INTERNAL_MONGO_CLIENTS_COLLECTION'),
-    employeesCollection: str('INTERNAL_MONGO_EMPLOYEES_COLLECTION'),
   },
 
   /** Optional read-only Postgres internal tool (unused when Mongo is set). */
@@ -140,8 +138,6 @@ export const config = {
     sendEnabled: bool('SLACK_SEND_ENABLED', false),
     /** Minutes of quiet before the LLM window runs on a channel. */
     debounceMinutes: num('SLACK_DEBOUNCE_MINUTES', 15),
-    /** Gap that ends a run of consecutive client messages. */
-    groupGapMinutes: num('SLACK_GROUP_GAP_MINUTES', 10),
   },
 
   safety: {
@@ -152,7 +148,6 @@ export const config = {
   server: {
     port: num('PORT', 8787),
     logLevel: str('LOG_LEVEL', 'info'),
-    devUserEmail: str('DEV_USER_EMAIL', 'dev@cubehq.ai'),
   },
 };
 

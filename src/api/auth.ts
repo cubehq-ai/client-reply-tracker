@@ -84,14 +84,6 @@ export async function currentUser(req: FastifyRequest): Promise<SessionUser | nu
     }
   }
 
-  // Dev convenience only: never reachable in production builds.
-  if (process.env.NODE_ENV !== 'production' && process.env.DEV_AUTH_BYPASS === 'true') {
-    const row = await one<{ id: string; email: string; name: string | null; role: string; can_send_as_shared: boolean }>(
-      'SELECT id, email, name, role, can_send_as_shared FROM users WHERE email = $1',
-      [config.server.devUserEmail],
-    );
-    if (row) return { id: Number(row.id), email: row.email, name: row.name, role: row.role as SessionUser['role'], canSendAsShared: row.can_send_as_shared };
-  }
 
   return null;
 }

@@ -7,9 +7,8 @@
  */
 import { closePool, query } from '../src/db/pool.js';
 import { FIXTURE_CLIENTS, FIXTURE_USERS } from '../src/gmail/fixtures.js';
-import { config } from '../src/lib/config.js';
-
-const keep = new Set([config.server.devUserEmail.toLowerCase()]);
+// The account to preserve, since this truncates everything else.
+const keep = new Set([(process.env.KEEP_USER ?? 'dev@cubehq.ai').toLowerCase()]);
 const fixtureEmails = FIXTURE_USERS.map((u) => u.email.toLowerCase()).filter((e) => !keep.has(e));
 const fixtureClientIds = FIXTURE_CLIENTS.map((c) => c.externalId);
 
