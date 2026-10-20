@@ -66,3 +66,18 @@ describe('railway configuration', () => {
     for (const l of lines) expect(l).toMatch(/^(web|worker): \S/);
   });
 });
+
+describe('a deployed service without DATABASE_URL', () => {
+  it('says the variable is missing instead of dialling localhost', async () => {
+    // Falling back to 127.0.0.1:5432 turned an unset variable into an
+    // ECONNREFUSED crash-loop, which reads as a database problem.
+    const { execFileSync } = await import('node:child_process');
+    const script = "import('./dist/src/lib/config.js').catch((e) => { console.log(e.message); process.exit(0); });";
+    const out = execFileSync('node', ['-e', script], {
+      env: { ...process.env, DATABASE_URL: '', NODE_ENV: 'production', RAILWAY_ENVIRONMENT: 'production' },
+      encoding: 'utf8',
+    });
+    expect(out).toContain('DATABASE_URL is not set');
+    expect(out).toMatch(/every service has its own variables/);
+  });
+});

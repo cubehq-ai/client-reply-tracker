@@ -25,8 +25,31 @@ function list(key: string, fallback: string[] = []): string[] {
   return v.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 }
 
+/**
+ * The database URL, or a clear failure.
+ *
+ * It used to fall back to localhost, which is right on a laptop and wrong
+ * everywhere else: deployed without the variable, the worker dialled
+ * 127.0.0.1:5432 and crash-looped on ECONNREFUSED -- a stack trace about a
+ * refused connection, when the actual problem was an unset variable.
+ */
+function requiredDatabaseUrl(): string {
+  const url = str('DATABASE_URL');
+  if (url) return url;
+
+  // A laptop keeps the old convenience; anything deployed has to say so.
+  const local = process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development';
+  if (local || (!process.env.NODE_ENV && !process.env.RAILWAY_ENVIRONMENT)) {
+    return 'postgres://localhost:5432/client_reply_tracker';
+  }
+  throw new Error(
+    'DATABASE_URL is not set. Set it on this service — on Railway every service has its own variables, '
+    + 'so setting it on web does not set it on worker.',
+  );
+}
+
 export const config = {
-  databaseUrl: str('DATABASE_URL', 'postgres://localhost:5432/client_reply_tracker'),
+  databaseUrl: requiredDatabaseUrl(),
 
   google: {
     serviceAccountFile: str('GOOGLE_SERVICE_ACCOUNT_FILE'),

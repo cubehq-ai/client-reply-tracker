@@ -481,6 +481,11 @@ process, and a comment containing a colon was picked up as a third service
 called "# Migrations run in the ...". Keep it to the two process lines.
 
 ### Environment
+**Railway variables are per service.** Setting `DATABASE_URL` on `web` does not
+set it on `worker`: the worker will start, dial `127.0.0.1:5432` and
+crash-loop. Either set the variables on both, or define them once at the
+environment level and reference them from each service.
+
 Everything in `.env.example`. The ones without which it will not work:
 `DATABASE_URL`, `GOOGLE_BACKEND=real`, `GOOGLE_SERVICE_ACCOUNT_FILE` (or the
 key's JSON mounted at that path), `SESSION_SECRET`, `ORG_DOMAINS`.
