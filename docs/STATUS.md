@@ -392,3 +392,69 @@ the agent can run the app against the database without ever seeing the string.
 The escape hatch `INTERNAL_DB_ALLOW_WRITABLE_CREDENTIAL=true` exists so a human
 can knowingly proceed with a writable login during setup. Setting it is denied
 to the agent, and it only downgrades layer 2 — layer 3 still blocks writes.
+
+
+## Slack ingestion (2026-10-20)
+
+### How it is configured
+`SLACK_USER_TOKEN` in `.env` — a **user** token (`xoxp-`), not a bot token.
+Empty disables Slack completely: no sync, no network calls, and the Slack tab
+reads "not connected".
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SLACK_USER_TOKEN` | *(empty)* | The token. Empty = Slack off. |
+| `SLACK_SEND_ENABLED` | `false` | Replies are logged, not posted, until this is `true`. |
+| `SLACK_DEBOUNCE_MINUTES` | `15` | Quiet period before ambiguous groups go to the model. |
+| `SLACK_GROUP_GAP_MINUTES` | `10` | Gap that ends a run of consecutive client messages. |
+
+Scopes in use: `channels:read`, `channels:history`, `groups:read`,
+`groups:history`, `users:read`, `users:read.email`, `reactions:read`,
+`team:read`, `chat:write`.
+
+### Swapping to the shared account's token
+Nothing in the code depends on which account owns the token — the owner is read
+from `auth.test` at startup and shown in Settings and the composer.
+
+1. Replace `SLACK_USER_TOKEN` in `.env`.
+2. Restart the API and worker.
+3. Settings → **Slack channels**, confirm the channel list (the new account is
+   in different channels) and map any that are unmapped.
+
+Watching a channel for the first time backfills it immediately, so a newly
+mapped channel is useful without waiting for the next poll.
+
+### Schedule
+| Job | Cadence |
+|---|---|
+| `slack-sync` — history per watched channel | every 2 min |
+| `slack-window` — the ambiguous groups | every 5 min, only after a channel is quiet |
+| `slack-channels` — channel list and auto mapping | hourly |
+| `slack-users` — user directory | daily 05:00 |
+
+### Channels, as of this writing
+The token belongs to **sasi** in **Cube HQ**, which is in 4 channels:
+
+| Channel | Mapped | Watched |
+|---|---|---|
+| `#team-kasa-x-cube` (Slack Connect) | **no client** | yes (watched by hand to verify the pipeline) |
+| `#general` | no | no |
+| `#random` | no | no |
+| `#connector-statuses` | no | no |
+
+`#team-kasa-x-cube` produced 13 client groups: 3 needing a reply, 10 detected as
+already answered.
+
+### Left for a human
+- **Kasa is not a client in the dashboard.** All 41 external members of
+  `#team-kasa-x-cube` are `@kasa.com`, and no client has that domain, so auto
+  mapping correctly refused to guess. Either add Kasa as a client with the
+  domain, or map the channel by hand in Settings → Slack channels. Until then
+  its items show as `unmatched`.
+- **`#team-kasa-x-cube` was set to watched by hand** to verify the pipeline
+  end to end. Untick it in Settings if you would rather it were not ingested yet.
+- **Replies are a dry run.** `SLACK_SEND_ENABLED=false`, so Reply logs the
+  payload. Set it to `true` when you want real posts.
+- **No `ANTHROPIC_API_KEY`**, so the LLM window falls back to closing
+  answered-looking groups with `low_confidence` set rather than asking a model
+  which client message a reply answered.
