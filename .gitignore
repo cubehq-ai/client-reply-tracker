@@ -7,3 +7,7 @@ web/dist/
 spend-monitor-*.json
 secrets/
 .DS_Store
+
+# Backups of .env made while editing it. These contain real credentials.
+.env.bak*
+.env.*.bak
