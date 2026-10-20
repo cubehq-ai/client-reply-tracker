@@ -28,6 +28,11 @@ export default defineConfig({
       INTERNAL_DB_URL: '',
       CLIENT_DB_URL: '',
       GOOGLE_SERVICE_ACCOUNT_FILE: '',
+      // A real xoxp token sits in .env, which config.ts loads. Blank here, or
+      // a test that forgets to install the fake client talks to the live
+      // workspace -- and chat.postMessage would post into a client channel.
+      SLACK_USER_TOKEN: '',
+      SLACK_SEND_ENABLED: 'false',
     },
     testTimeout: 60_000,
     hookTimeout: 60_000,

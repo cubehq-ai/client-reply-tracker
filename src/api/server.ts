@@ -29,6 +29,7 @@ import {
 import { draftReply, getThread, sendReply } from './compose.js';
 import { fetchAttachment } from './attachments.js';
 import { clientOverview, inboxFacets, listQueue, queueCounts, teamOverview, type QueueFilters, type QueueName } from './queues.js';
+import { getSlackThread, listSlackChannels, sendSlackReply, slackStatus, updateSlackChannel } from './slackApi.js';
 import {
   addClientDomain, addClientPattern, addMailbox, addMailboxesBulk, applyDomainSuggestions, createClient, createSavedView,
   createTeam, deleteSavedView, deleteTeam, listClientsDetailed, listMailboxes, listSavedViews,
@@ -213,6 +214,34 @@ export async function buildServer(): Promise<FastifyInstance> {
       // The bytes are a client's file; never let a shared cache hold them.
       .header('Cache-Control', 'private, max-age=300')
       .send(file.bytes);
+  });
+
+  // ---- Slack ----
+  app.get('/api/slack/status', async (req) => {
+    await requireUser(req);
+    return slackStatus();
+  });
+
+  app.get('/api/slack/channels', async (req) => {
+    await requireUser(req);
+    return { channels: await listSlackChannels() };
+  });
+
+  app.patch('/api/slack/channels/:id', async (req) => {
+    const user = await requireUser(req);
+    const body = (req.body ?? {}) as { clientId?: number | null; watched?: boolean };
+    return updateSlackChannel(user, String((req.params as any).id), body);
+  });
+
+  app.get('/api/items/:id/slack-thread', async (req) => {
+    await requireUser(req);
+    return getSlackThread(itemId(req));
+  });
+
+  app.post('/api/items/:id/slack-reply', async (req) => {
+    const user = await requireUser(req);
+    const body = (req.body ?? {}) as { text?: string };
+    return sendSlackReply(user, itemId(req), String(body.text ?? ''));
   });
 
   app.get('/api/items/:id/events', async (req) => {

@@ -18,8 +18,10 @@ export interface QueueFilters {
   intent?: string;
   view?: 'mine' | 'team' | 'all';
   search?: string;
-  /** Channel tab. Only gmail exists in v1; Slack is planned (SPEC 15).  */
+  /** Channel tab: which source's items to show. */
   source?: 'gmail' | 'slack';
+  /** Slack channel ids, for the channel filter on the Slack tab. */
+  channelIds?: string[];
   /** One or more item states. Empty means "every active state". */
   status?: string[];
   /**
@@ -59,6 +61,9 @@ export interface QueueItem {
   reopenCount: number;
   muted: boolean;
   filterReason: string | null;
+  source: 'gmail' | 'slack';
+  slackChannelId: string | null;
+  slackChannelName: string | null;
   fromEmail: string | null;
   fromName: string | null;
   snippet: string | null;
@@ -160,6 +165,10 @@ export async function listQueue(
     where.push(`(u.team_id = ANY($${params.length}::bigint[]) OR mb_team.team_id = ANY($${params.length}::bigint[]))`);
   }
   if (filters.source) { params.push(filters.source); where.push(`i.source = $${params.length}`); }
+  if (filters.channelIds?.length) {
+    params.push(filters.channelIds);
+    where.push(`i.slack_channel_id = ANY($${params.length}::text[])`);
+  }
   if (filters.status?.length) { params.push(filters.status); where.push(`i.state = ANY($${params.length}::text[])`); }
   if (filters.freshness) {
     params.push(String(config.org.unrespondedAfterHours));
@@ -188,6 +197,13 @@ export async function listQueue(
                 JOIN mailboxes mb ON mb.id = mc.mailbox_id
                WHERE m.conversation_id = i.conversation_id AND mc.deleted = false) AS mailboxes,
              (SELECT l.user_email FROM item_locks l WHERE l.item_id = i.id AND l.expires_at > now()) AS locked_by,
+             sc.name AS slack_channel_name,
+             (SELECT COALESCE(su.name, sm.user_id) FROM slack_messages sm
+                LEFT JOIN slack_users su ON su.id = sm.user_id
+               WHERE sm.channel_id = i.slack_channel_id AND sm.ts = i.slack_group_ts) AS slack_author,
+             (SELECT string_agg(sm.text, E'\n' ORDER BY sm.ts)
+                FROM slack_messages sm
+               WHERE sm.conversation_id = i.conversation_id AND NOT sm.deleted) AS slack_text,
              COALESCE(t_owner.name, t_mb.name) AS team_name,
              count(*) OVER () AS total_count
         FROM items i
@@ -203,6 +219,7 @@ export async function listQueue(
         ) mb_team ON true
         LEFT JOIN teams t_owner ON t_owner.id = u.team_id
         LEFT JOIN teams t_mb ON t_mb.id = mb_team.team_id
+        LEFT JOIN slack_channels sc ON sc.id = i.slack_channel_id
        WHERE ${where.join(' AND ')}
        ORDER BY ${orderClause(queue)}
        LIMIT ${limit} OFFSET ${offset}
@@ -233,9 +250,14 @@ export async function listQueue(
       reopenCount: Number(r.reopen_count ?? 0),
       muted: Boolean(r.muted),
       filterReason: r.filter_reason,
-      fromEmail: r.from_email,
-      fromName: null,
-      snippet: r.snippet,
+      // A Slack item has no mailbox or RFC sender; the author and the channel
+      // play those roles so one row component renders both sources.
+      fromEmail: r.from_email ?? r.slack_author ?? null,
+      fromName: r.slack_author ?? null,
+      snippet: r.snippet ?? (r.slack_text ? String(r.slack_text).split('\n')[0]?.slice(0, 200) : null),
+      source: r.source ?? 'gmail',
+      slackChannelId: r.slack_channel_id ?? null,
+      slackChannelName: r.slack_channel_name ?? null,
       mailboxes: r.mailboxes ?? [],
       teamName: r.team_name ?? null,
       lockedBy: r.locked_by ?? null,

@@ -16,6 +16,7 @@ const TABS = [
   { key: 'mailboxes', label: 'Mailboxes & teams' },
   { key: 'clients', label: 'Clients & domains' },
   { key: 'rules', label: 'Matching rules' },
+  { key: 'slack', label: 'Slack channels' },
 ];
 
 export function Settings({ onChanged, clients }: { onChanged: () => void; clients: any[] }) {
@@ -31,6 +32,7 @@ export function Settings({ onChanged, clients }: { onChanged: () => void; client
       {tab === 'mailboxes' && <Mailboxes onChanged={onChanged} />}
       {tab === 'clients' && <Clients onChanged={onChanged} />}
       {tab === 'rules' && <Rules clients={clients} onChanged={onChanged} />}
+      {tab === 'slack' && <SlackChannels clients={clients} onChanged={onChanged} />}
     </>
   );
 }
@@ -450,5 +452,107 @@ function Clients({ onChanged }: { onChanged: () => void }) {
         </table>
       </div>
     </>
+  );
+}
+
+
+/**
+ * Which Slack channels belong to which client, and which are watched.
+ *
+ * Auto mapping only answers when the channel's external members point at
+ * exactly one client, which in practice means the client has to be in the
+ * dashboard with a domain recorded. Everything else lands here for a person
+ * to decide.
+ */
+function SlackChannels({ clients, onChanged }: { clients: any[]; onChanged: () => void }) {
+  const [status, setStatus] = useState<any>(null);
+  const [channels, setChannels] = useState<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = (): void => {
+    api.slackStatus().then(setStatus).catch((e) => setError(e.message));
+    api.slackChannels().then((r) => setChannels(r.channels)).catch((e) => setError(e.message));
+  };
+  useEffect(load, []);
+
+  const patch = async (id: string, body: { clientId?: number | null; watched?: boolean }): Promise<void> => {
+    setBusy(id);
+    setError(null);
+    try {
+      const r = await api.updateSlackChannel(id, body);
+      setNotice(r.backfilled ? 'Mapped and backfilled' : 'Saved');
+      load();
+      onChanged();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (status && !status.connected) {
+    return (
+      <div className="card">
+        <div className="empty">
+          Slack is not connected. Set <span className="mono">SLACK_USER_TOKEN</span> and restart.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      {error && <div className="banner err">{error}</div>}
+      {notice && <div className="banner ok">{notice}</div>}
+      {status && (
+        <div className="subtitle">
+          Reading as <strong>{status.postingAs?.userName ?? 'unknown'}</strong>
+          {status.postingAs?.teamName ? ` in ${status.postingAs.teamName}` : ''} ·{' '}
+          {status.watchedChannels} watched · {status.unmappedChannels} unmapped ·{' '}
+          replies {status.sendEnabled ? 'post for real' : 'are a dry run'}
+        </div>
+      )}
+      <table>
+        <thead>
+          <tr><th>Channel</th><th>Client</th><th>Watched</th><th>Open</th></tr>
+        </thead>
+        <tbody>
+          {channels.map((c) => (
+            <tr key={c.id}>
+              <td>
+                #{c.name}
+                {c.is_shared && <span className="tag" style={{ marginLeft: 6 }}>connect</span>}
+                {c.is_private && <span className="tag" style={{ marginLeft: 6 }}>private</span>}
+                {c.mapping_source === 'manual' && <span className="tag" style={{ marginLeft: 6 }}>manual</span>}
+              </td>
+              <td>
+                <select
+                  value={c.client_id ?? ''}
+                  disabled={busy === c.id}
+                  onChange={(e) => patch(c.id, { clientId: e.target.value === '' ? null : Number(e.target.value) })}
+                >
+                  <option value="">— not a client —</option>
+                  {clients.map((cl) => <option key={cl.id} value={cl.id}>{cl.name}</option>)}
+                </select>
+              </td>
+              <td>
+                <input
+                  type="checkbox"
+                  checked={Boolean(c.watched)}
+                  disabled={busy === c.id}
+                  onChange={(e) => patch(c.id, { watched: e.target.checked })}
+                />
+              </td>
+              <td>{c.open_items ?? 0}</td>
+            </tr>
+          ))}
+          {channels.length === 0 && (
+            <tr><td colSpan={4} className="empty">No channels yet — the sync lists the ones this account is in.</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
   );
 }

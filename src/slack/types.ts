@@ -74,6 +74,9 @@ export interface SlackClient {
   /** User ids in a channel. Membership, not authorship: a client who has not
    *  posted yet still identifies whose channel it is. */
   listMembers(channel: string, cursor?: string | null): Promise<SlackPage<string>>;
+  /** One user by id. users.list covers only our own workspace, so people from
+   *  a Slack Connect channel -- the clients -- are only reachable this way. */
+  getUser(userId: string): Promise<SlackUser | null>;
   /** Top-level channel history, oldest-exclusive. */
   history(channel: string, opts: { oldest?: string | null; cursor?: string | null }): Promise<SlackPage<SlackMessage>>;
   /** Every message in one thread, parent first. */

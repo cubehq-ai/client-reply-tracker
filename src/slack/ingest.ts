@@ -1,10 +1,10 @@
 import { query, tx } from '../db/pool.js';
-import { config, slackEnabled } from '../lib/config.js';
+import { config } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { classifyMessage } from '../pipeline/classify.js';
-import { getSlackClient } from './index.js';
+import { getSlackClient, slackConfigured } from './index.js';
 import { groupClientMessages, isAcknowledgement, resolveGroup, type StoredSlackMessage } from './groups.js';
-import { slackIdentity } from './sync.js';
+import { ensureSlackUsers, slackIdentity } from './sync.js';
 import type { SlackMessage } from './types.js';
 
 /** Slack ts values are seconds with microseconds; compare numerically. */
@@ -32,7 +32,7 @@ export interface ChannelSyncStats {
  * it would both cost calls and file someone else's conversation as work.
  */
 export async function syncSlackChannelMessages(): Promise<ChannelSyncStats[]> {
-  if (!slackEnabled()) return [];
+  if (!slackConfigured()) return [];
 
   const channels = await query<{ id: string; name: string; last_synced_ts: string | null; backfilled_at: Date | null }>(
     'SELECT id, name, last_synced_ts, backfilled_at FROM slack_channels WHERE watched AND NOT is_archived',
@@ -114,6 +114,9 @@ export async function syncOneChannel(
 
 /** Upserts messages, carrying edits and reactions through. */
 async function storeMessages(channelId: string, messages: SlackMessage[]): Promise<number> {
+  // An author from the client's workspace is not in users.list, and without
+  // their row every message of theirs would be filed as internal.
+  await ensureSlackUsers([...new Set(messages.map((m) => m.userId).filter((id): id is string => id != null))]);
   const internal = await internalUserIds();
   let stored = 0;
 

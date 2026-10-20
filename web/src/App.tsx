@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, timeAgo, type User } from './api';
 import { Login } from './Login';
 import { Thread } from './Thread';
+import { SlackThread } from './SlackThread';
 import { Inbox, type Filters } from './Inbox';
 import { Settings } from './Settings';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -32,6 +33,8 @@ export function App() {
   const [filters, setFilters] = useState<Filters>(INBOX.preset);
   const [health, setHealth] = useState<any>(null);
   const [openItem, setOpenItem] = useState<number | null>(null);
+  // Which drawer to render: a Slack item is a channel, not a mail thread.
+  const [openSource, setOpenSource] = useState<'gmail' | 'slack'>('gmail');
   const [clients, setClients] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [teams, setTeams] = useState<any[]>([]);
@@ -150,7 +153,7 @@ export function App() {
             clients={clients}
             users={users}
             teams={teams}
-            onOpen={setOpenItem}
+            onOpen={(id, source) => { setOpenItem(id); setOpenSource(source ?? 'gmail'); }}
             openItem={openItem}
             title={page.title}
             subtitle={page.subtitle}
@@ -168,7 +171,13 @@ export function App() {
         </ErrorBoundary>
       </main>
 
-      {openItem !== null && (
+      {openItem !== null && (openSource === 'slack' ? (
+        <SlackThread
+          itemId={openItem}
+          onClose={() => setOpenItem(null)}
+          onChanged={refresh}
+        />
+      ) : (
         <Thread
           itemId={openItem}
           user={user}
@@ -176,7 +185,7 @@ export function App() {
           onClose={() => setOpenItem(null)}
           onChanged={refresh}
         />
-      )}
+      ))}
     </div>
   );
 }

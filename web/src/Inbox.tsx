@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { api, timeAgo, type InboxFacets, type QueueItem, type User } from './api';
 import { MultiSelect } from './MultiSelect';
 
-/** Channel tabs. Email is v1; Slack is the planned second source (SPEC 15). */
+/** Channel tabs. Slack is ready only once a token is configured. */
 const CHANNELS = [
-  { key: 'gmail', label: 'Email', ready: true },
-  { key: 'slack', label: 'Slack', ready: false },
+  { key: 'gmail', label: 'Email' },
+  { key: 'slack', label: 'Slack' },
 ];
 
 /** Why a closed item is closed. Only meaningful on the second tab. */
@@ -27,7 +27,7 @@ export type Filters = Record<string, string>;
 export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen, openItem, title, subtitle, refreshKey, classifier }: {
   user: User; filters: Filters; setFilters: (f: Filters) => void;
   clients: any[]; users: any[]; teams: any[];
-  onOpen: (id: number) => void; openItem: number | null;
+  onOpen: (id: number, source?: 'gmail' | 'slack') => void; openItem: number | null;
   title: string; subtitle: string;
   /** Bumped only when something actually changed; opening an item does not. */
   refreshKey: number;
@@ -36,6 +36,13 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
 }) {
   const [data, setData] = useState<{ items: QueueItem[]; total: number; facets: InboxFacets } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [slack, setSlack] = useState<{ connected: boolean; postingAs: { userName: string } | null } | null>(null);
+  const [channels, setChannels] = useState<{ id: string; name: string; watched: boolean }[]>([]);
+
+  useEffect(() => {
+    api.slackStatus().then(setSlack).catch(() => setSlack({ connected: false, postingAs: null }));
+    api.slackChannels().then((r) => setChannels(r.channels)).catch(() => setChannels([]));
+  }, [refreshKey]);
 
   const params = useMemo(() => {
     const p: Filters = { limit: '100', ...filters };
@@ -81,17 +88,21 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
       </div>
 
       <div className="tabs">
-        {CHANNELS.map((c) => (
-          <button
-            key={c.key}
-            className={`tab ${(filters.source ?? 'gmail') === c.key ? 'active' : ''}`}
-            disabled={!c.ready}
-            title={c.ready ? undefined : `${c.label} ingestion is not built yet`}
-            onClick={() => set({ source: c.key })}
-          >
-            {c.label}{!c.ready && <span className="tag" style={{ marginLeft: 6 }}>soon</span>}
-          </button>
-        ))}
+        {CHANNELS.map((c) => {
+          const ready = c.key !== 'slack' || slack?.connected === true;
+          return (
+            <button
+              key={c.key}
+              className={`tab ${(filters.source ?? 'gmail') === c.key ? 'active' : ''}`}
+              disabled={!ready}
+              title={ready ? undefined : 'Set SLACK_USER_TOKEN to connect Slack'}
+              onClick={() => set({ source: c.key, channelIds: '' })}
+            >
+              {c.label}
+              {!ready && <span className="tag" style={{ marginLeft: 6 }}>not connected</span>}
+            </button>
+          );
+        })}
       </div>
 
       <div className="tabs state-tabs">
@@ -158,6 +169,15 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
             selected={list(filters.clientIds)}
             onChange={(v) => set({ clientIds: v.join(',') })}
           />
+          {filters.source === 'slack' && (
+            <MultiSelect
+              label="Channel"
+              searchable
+              options={channels.filter((c) => c.watched).map((c) => ({ value: c.id, label: `#${c.name}` }))}
+              selected={list(filters.channelIds)}
+              onChange={(v) => set({ channelIds: v.join(',') })}
+            />
+          )}
           <MultiSelect
             label="Team"
             options={teams.map((t) => ({ value: String(t.id), label: t.name }))}
@@ -219,10 +239,10 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
         {!data && !error && <div className="empty">Loading…</div>}
         {data?.items.length === 0 && <div className="empty">Nothing matches these filters.</div>}
         {data?.items.map((it) => (
-          <div key={it.id} className={`row ${openItem === it.id ? 'selected' : ''}`} onClick={() => onOpen(it.id)}>
+          <div key={it.id} className={`row ${openItem === it.id ? 'selected' : ''}`} onClick={() => onOpen(it.id, it.source)}>
             <div className="row-title">
               <StateDot state={it.state} />
-              {it.subject}
+              {it.source === 'slack' && it.slackChannelName ? `#${it.slackChannelName}` : it.subject}
               {it.muted && <span className="tag">muted</span>}
               {it.reason && <span className="tag">{REASONS.find((r) => r.key === it.reason)?.label ?? it.reason}</span>}
               {it.filterReason && <span className="tag">{it.filterReason}</span>}
@@ -235,7 +255,7 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
             <div className="row-meta">
               <span className={`tag ${it.clientName ? 'client' : ''}`}>{it.clientName ?? 'unmatched'}</span>
               {it.teamName && <span className="tag">{it.teamName}</span>}
-              <span>{it.fromEmail}</span>
+              <span>{it.source === 'slack' ? (it.fromName ?? it.fromEmail) : it.fromEmail}</span>
               <span>owner: {it.ownerEmail ?? 'unowned'}</span>
 
               {it.summary && <span style={{ flexBasis: '100%' }}>{it.summary}</span>}

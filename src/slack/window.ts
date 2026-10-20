@@ -27,7 +27,12 @@ interface WindowMessage {
  * mid-conversation would otherwise be judged before the answer arrives, and
  * every new line would pay for another call.
  */
-export async function runSlackWindows(now: Date = new Date()): Promise<WindowResult[]> {
+export async function runSlackWindows(
+  now: Date = new Date(),
+  /** Whether a model is available. Defaults to the configured key; passed
+   *  explicitly by tests, which never have one. */
+  haveModel: boolean = useRealClassifier(),
+): Promise<WindowResult[]> {
   const channels = await query<{ id: string; name: string; last_message_at: Date | null }>(
     `SELECT DISTINCT c.id, c.name, c.last_message_at
        FROM slack_channels c
@@ -42,12 +47,12 @@ export async function runSlackWindows(now: Date = new Date()): Promise<WindowRes
       results.push({ channel: ch.name, decided: 0, skipped: 'quiet-pending' });
       continue;
     }
-    results.push(await runWindowForChannel(ch.id, ch.name));
+    results.push(await runWindowForChannel(ch.id, ch.name, haveModel));
   }
   return results;
 }
 
-async function runWindowForChannel(channelId: string, channelName: string): Promise<WindowResult> {
+async function runWindowForChannel(channelId: string, channelName: string, haveModel: boolean): Promise<WindowResult> {
   const pending = await query<{ slack_group_ts: string }>(
     `SELECT slack_group_ts FROM items
       WHERE slack_channel_id = $1 AND state = 'needs_reply' AND low_confidence
@@ -59,7 +64,7 @@ async function runWindowForChannel(channelId: string, channelName: string): Prom
   // Without a model there is no way to tell which group was answered. Treating
   // an answered-looking group as replied matches what the channel looks like
   // to a person, and low_confidence keeps it visible as a guess.
-  if (!useRealClassifier()) {
+  if (!haveModel) {
     const closed = await query(
       `UPDATE items SET state = 'no_reply_needed', reason = 'replied', low_confidence = true, updated_at = now()
         WHERE slack_channel_id = $1 AND state = 'needs_reply' AND low_confidence

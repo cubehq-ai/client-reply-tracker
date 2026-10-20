@@ -618,3 +618,26 @@ td .mono > .btn { margin-left: 6px; }
 /* A cell holding a control is left-aligned: centring makes each control sit
    on its own width, so a column of them lands ragged. */
 td:has(select), td:has(input), td:has(.btn), td:has(button) { text-align: left; }
+
+/* ---- slack thread ---- */
+/* A channel reads as a run of short messages, not as stacked mail: the group
+   this item is about is marked so it stands out from its context. */
+.slack-log { overflow-y: auto; flex: 1; padding: 4px 0; }
+.slack-msg { padding: 7px 12px; border-left: 3px solid transparent; }
+.slack-msg + .slack-msg { border-top: 1px solid var(--border); }
+.slack-msg.in-group { border-left-color: var(--accent); background: var(--accent-soft); }
+.slack-msg.internal .slack-msg-head strong { color: var(--muted); }
+.slack-msg.deleted .slack-msg-body { text-decoration: line-through; }
+.slack-msg-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; margin-bottom: 2px; }
+.slack-msg-body { font-size: 13.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.slack-reactions { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+.slack-reaction {
+  font-size: 11.5px; color: var(--muted); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 7px;
+}
+.slack-composer { display: flex; flex-direction: column; gap: 7px; width: 100%; }
+.slack-composer textarea {
+  width: 100%; resize: vertical; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  font: inherit; line-height: 1.45;
+}

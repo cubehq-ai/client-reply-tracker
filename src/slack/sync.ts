@@ -1,10 +1,9 @@
 import { query } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
-import { slackEnabled } from '../lib/config.js';
 import { loadOrgContext } from '../pipeline/context.js';
 import { matchClient } from '../pipeline/clientMatch.js';
 import { domainOf } from '../pipeline/normalize.js';
-import { getSlackClient } from './index.js';
+import { getSlackClient, slackConfigured } from './index.js';
 import type { SlackIdentity } from './types.js';
 
 /**
@@ -26,7 +25,7 @@ export function clearSlackIdentity(): void {
 
 /** Pulls the user directory so internal/external is a lookup, not a guess. */
 export async function syncSlackUsers(): Promise<{ users: number; internal: number }> {
-  if (!slackEnabled()) return { users: 0, internal: 0 };
+  if (!slackConfigured()) return { users: 0, internal: 0 };
   const client = getSlackClient();
   const me = await slackIdentity();
   const org = await loadOrgContext();
@@ -61,6 +60,45 @@ export async function syncSlackUsers(): Promise<{ users: number; internal: numbe
   return { users: count, internal: internalCount };
 }
 
+/**
+ * Stores any of these users we do not already know.
+ *
+ * users.list covers our own workspace only. The people in a Slack Connect
+ * channel belong to the client's workspace, so they never appear in it --
+ * which is to say every external member, the ones the mapping depends on,
+ * has to be fetched one at a time.
+ */
+export async function ensureSlackUsers(userIds: string[]): Promise<number> {
+  if (userIds.length === 0) return 0;
+  const known = await query<{ id: string }>('SELECT id FROM slack_users WHERE id = ANY($1::text[])', [userIds]);
+  const missing = userIds.filter((id) => !known.some((k) => k.id === id));
+  if (missing.length === 0) return 0;
+
+  const client = getSlackClient();
+  const me = await slackIdentity();
+  const org = await loadOrgContext();
+  let added = 0;
+
+  for (const id of missing) {
+    const u = await client.getUser(id);
+    if (!u) continue;
+    const email = u.email?.toLowerCase() ?? null;
+    const isInternal = u.teamId === me.teamId || (email != null && org.orgDomains.has(domainOf(email)));
+    await query(
+      `INSERT INTO slack_users (id, team_id, email, name, is_internal, is_bot, deleted, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+       ON CONFLICT (id) DO UPDATE SET
+         team_id = EXCLUDED.team_id, email = EXCLUDED.email, name = EXCLUDED.name,
+         is_internal = EXCLUDED.is_internal, is_bot = EXCLUDED.is_bot,
+         deleted = EXCLUDED.deleted, updated_at = now()`,
+      [u.id, u.teamId, email, u.name, isInternal, u.isBot, u.deleted],
+    );
+    added += 1;
+  }
+  if (added > 0) logger.info({ added }, 'fetched slack users not in our workspace');
+  return added;
+}
+
 export interface ChannelSyncResult {
   channels: number;
   mapped: number;
@@ -76,7 +114,7 @@ export interface ChannelSyncResult {
  * two clients is left for a human rather than guessed at.
  */
 export async function syncSlackChannels(): Promise<ChannelSyncResult> {
-  if (!slackEnabled()) return { channels: 0, mapped: 0, unmapped: [] };
+  if (!slackConfigured()) return { channels: 0, mapped: 0, unmapped: [] };
   const client = getSlackClient();
   const org = await loadOrgContext();
 
@@ -149,6 +187,9 @@ async function inferChannelClient(
   } while (cursor);
 
   if (memberIds.length === 0) return null;
+
+  // The externals are exactly the people users.list does not return.
+  await ensureSlackUsers(memberIds);
 
   const externals = await query<{ email: string }>(
     `SELECT DISTINCT email FROM slack_users

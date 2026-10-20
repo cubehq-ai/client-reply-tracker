@@ -10,6 +10,27 @@ export interface QueueItem {
   reopenCount: number; muted: boolean; filterReason: string | null;
   fromEmail: string | null; snippet: string | null;
   mailboxes: string[]; teamName: string | null; lockedBy: string | null;
+  source: 'gmail' | 'slack';
+  slackChannelId: string | null; slackChannelName: string | null;
+  fromName: string | null;
+}
+
+export interface SlackStatus {
+  connected: boolean;
+  sendEnabled: boolean;
+  postingAs: { userId: string; userName: string; teamName: string } | null;
+  watchedChannels: number;
+  unmappedChannels: number;
+}
+
+export interface SlackThread {
+  channelId: string; channelName: string; permalink: string | null;
+  postingAs: string | null; groupTs: string;
+  messages: {
+    ts: string; author: string; authorId: string | null; isInternal: boolean;
+    text: string; at: string; threadOf: string | null; inGroup: boolean;
+    deleted: boolean; reactions: Record<string, string[]>;
+  }[];
 }
 
 export interface InboxFacets {
@@ -70,6 +91,14 @@ export const api = {
   createSavedView: (name: string, filters: Record<string, string>, shared = false) =>
     request<{ id: number }>('/api/saved-views', { method: 'POST', body: JSON.stringify({ name, filters, shared }) }),
   deleteSavedView: (id: number) => request<any>(`/api/saved-views/${id}`, { method: 'DELETE' }),
+
+  slackStatus: () => request<SlackStatus>('/api/slack/status'),
+  slackChannels: () => request<{ channels: any[] }>('/api/slack/channels'),
+  updateSlackChannel: (id: string, patch: { clientId?: number | null; watched?: boolean }) =>
+    request<{ ok: true; backfilled: boolean }>(`/api/slack/channels/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  slackThread: (itemId: number) => request<SlackThread>(`/api/items/${itemId}/slack-thread`),
+  slackReply: (itemId: number, text: string) =>
+    request<{ ok: true; dryRun: boolean; ts: string }>(`/api/items/${itemId}/slack-reply`, { method: 'POST', body: JSON.stringify({ text }) }),
 
   settingsMailboxes: () => request<{ mailboxes: any[]; teams: any[] }>('/api/settings/mailboxes'),
   newPeople: (all = false) => request<{ people: any[]; error?: string }>(`/api/settings/new-people?all=${all}`),

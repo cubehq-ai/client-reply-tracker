@@ -35,6 +35,10 @@ export class FakeSlackClient implements SlackClient {
     return { items: this.workspace.users, cursor: null };
   }
 
+  async getUser(userId: string): Promise<SlackUser | null> {
+    return this.workspace.users.find((u) => u.id === userId) ?? null;
+  }
+
   async listMembers(channel: string): Promise<SlackPage<string>> {
     return { items: this.workspace.members.get(channel) ?? [], cursor: null };
   }

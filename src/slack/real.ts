@@ -96,6 +96,16 @@ export class RealSlackClient implements SlackClient {
     return { items, cursor: RealSlackClient.cursorOf(r) };
   }
 
+  async getUser(userId: string): Promise<SlackUser | null> {
+    try {
+      const r = await this.call('users.info', { user: userId });
+      return r.user ? toUser(r.user) : null;
+    } catch (err) {
+      logger.warn({ userId, err }, 'slack users.info failed');
+      return null;
+    }
+  }
+
   async listMembers(channel: string, cursor: string | null = null): Promise<SlackPage<string>> {
     const r = await this.call('conversations.members', { channel, limit: 200, cursor: cursor ?? undefined });
     return { items: ((r.members as string[]) ?? []).map(String), cursor: RealSlackClient.cursorOf(r) };
