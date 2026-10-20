@@ -253,7 +253,10 @@ export async function reconcileChannel(channelId: string): Promise<number> {
       }
     }
 
+    const owner = await ownerForGroup(channelId, p.group.messages.map((m) => m.text).join('\n'));
     await upsertSlackItem({
+      ownerUserId: owner.userId,
+      ownerSlackId: owner.slackUserId,
       channelId,
       channelName: ch[0].name,
       clientId: ch[0].client_id == null ? null : Number(ch[0].client_id),
@@ -316,6 +319,56 @@ async function closeEarlierGroupsOnAcknowledgement(channelId: string, groupTsLis
   }
 }
 
+/**
+ * Who a client's message is addressed to.
+ *
+ * A channel has no mailbox, so nothing set an owner and every Slack row read
+ * "owner: unowned". The message itself usually says: people open with
+ * "Hi @Shireen @Sahana". Those mentions, narrowed to our own people and
+ * matched to a user by email, are the owner. Failing that, whoever from our
+ * side last spoke in the channel is the one carrying it.
+ */
+async function ownerForGroup(
+  channelId: string,
+  groupText: string,
+): Promise<{ slackUserId: string | null; userId: number | null }> {
+  const mentioned = [...groupText.matchAll(/<@([A-Z0-9_]+)(?:\|[^>]*)?>/g)].map((m) => m[1]!);
+
+  let slackUserId: string | null = null;
+  if (mentioned.length > 0) {
+    const rows = await query<{ id: string }>(
+      `SELECT id FROM slack_users
+        WHERE id = ANY($1::text[]) AND is_internal AND NOT is_bot
+        ORDER BY array_position($1::text[], id) LIMIT 1`,
+      [mentioned],
+    );
+    slackUserId = rows[0]?.id ?? null;
+  }
+
+  if (slackUserId == null) {
+    const lastInternal = await query<{ user_id: string }>(
+      `SELECT m.user_id FROM slack_messages m
+         JOIN slack_users su ON su.id = m.user_id
+        WHERE m.channel_id = $1 AND m.is_internal AND NOT m.deleted AND NOT su.is_bot
+        ORDER BY m.ts DESC LIMIT 1`,
+      [channelId],
+    );
+    slackUserId = lastInternal[0]?.user_id ?? null;
+  }
+  if (slackUserId == null) return { slackUserId: null, userId: null };
+
+  // Link to a ReplyQueue account when that person has one, so the visibility
+  // rules and the owner filter keep working; the Slack identity stands either
+  // way, because most of the workspace has no account here.
+  const linked = await query<{ id: string }>(
+    `SELECT u.id FROM slack_users su
+       JOIN users u ON lower(u.email) = lower(su.email::text)
+      WHERE su.id = $1 AND su.email IS NOT NULL LIMIT 1`,
+    [slackUserId],
+  );
+  return { slackUserId, userId: linked[0] ? Number(linked[0].id) : null };
+}
+
 interface UpsertInput {
   channelId: string;
   channelName: string;
@@ -327,6 +380,8 @@ interface UpsertInput {
   summary: string;
   lastExternalAt: Date;
   messageTs: string[];
+  ownerUserId: number | null;
+  ownerSlackId: string | null;
 }
 
 /**
@@ -352,8 +407,9 @@ async function upsertSlackItem(input: UpsertInput): Promise<void> {
 
     await c.query(
       `INSERT INTO items (conversation_id, source, state, reason, client_id, low_confidence,
-                          summary, last_external_at, slack_channel_id, slack_group_ts, updated_at)
-       VALUES ($1,'slack',$2,$3,$4,$5,$6,$7,$8,$9, now())
+                          summary, last_external_at, slack_channel_id, slack_group_ts,
+                          owner_user_id, slack_owner_id, updated_at)
+       VALUES ($1,'slack',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
        ON CONFLICT (conversation_id) DO UPDATE SET
          -- A person's call stands: only 'replied' and 'filtered', which are
          -- facts about the channel rather than judgements, may overwrite it.
@@ -365,10 +421,14 @@ async function upsertSlackItem(input: UpsertInput): Promise<void> {
          low_confidence = EXCLUDED.low_confidence,
          summary = COALESCE(NULLIF(EXCLUDED.summary, ''), items.summary),
          last_external_at = EXCLUDED.last_external_at,
+         -- Never clear an owner a person assigned by hand.
+         owner_user_id = COALESCE(items.owner_user_id, EXCLUDED.owner_user_id),
+         slack_owner_id = COALESCE(items.slack_owner_id, EXCLUDED.slack_owner_id),
          updated_at = now()`,
       [
         conversationId, input.state, input.reason, input.clientId, input.lowConfidence,
         input.summary, input.lastExternalAt, input.channelId, input.groupTs,
+        input.ownerUserId, input.ownerSlackId,
       ],
     );
 

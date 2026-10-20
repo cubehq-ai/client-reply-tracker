@@ -213,3 +213,42 @@ Transitions: new client message in a channel with a closed item for that group �
 
 ### Finish
 - Update docs/STATUS.md with: how Slack is configured, how to swap to the shared account's token (replace `SLACK_USER_TOKEN`, restart, run channel sync), and any channels left unmapped.
+
+
+## Override: Slack items are per channel, not per message
+Replaces the item model, reply detection, transitions and UI in "Override: Slack ingestion".
+Access, channels/client mapping, sync and dry-run sending stay as written.
+
+### Item model
+- One item per watched Slack channel (`items.slack_channel_id`, unique). Same two states: `needs_reply` | `no_reply_needed`.
+- Item fields: `pending_count`, `oldest_pending_at`, `oldest_pending_ts`, `last_client_message_at`, `last_internal_message_at`, `preview` (text of the oldest pending client message, 200 chars).
+- Each stored Slack client message has `pending` (bool). The channel item is `needs_reply` when any client message in it is pending; otherwise `no_reply_needed` with reason `replied` (or `not_needed` if the last client messages were acknowledgements only).
+
+### Deciding which client messages are pending
+Recompute per channel whenever new messages arrive. A client message stops being pending when any of these is true:
+1. An internal message exists in its thread after it.
+2. An internal ✅ reaction (`white_check_mark`, `heavy_check_mark`) is on it.
+3. It is top-level and an internal top-level message exists after it in the channel that is not addressed only to colleagues (@mentions only internal users).
+4. It is classified as acknowledgement / no reply needed by the existing classifier.
+5. A later message from the same client user is an acknowledgement ("thanks", "👍", "great") → all earlier messages from that user become not pending.
+
+LLM check (only if `ANTHROPIC_API_KEY` is set): after the channel has been quiet for 15 minutes, if rule 3 closed 2 or more client messages using one internal message, send the window (max 30 messages, with ids, author, internal/external, thread markers) and ask for strict JSON `{"unanswered_client_message_ids": [...]}`. Re-mark those as pending. Without a key, keep rule 3's result and set `low_confidence = true` on the item.
+
+### Actions (per channel)
+- Reply: posts as a thread reply to the oldest pending client message by default; user can pick another pending message or post top-level. Dry-run unless `SLACK_SEND_ENABLED=true`.
+- "Mark all answered": sets every pending message in the channel to not pending (audit-logged).
+- Mark one message answered from the conversation view.
+- Ignore channel: stops watching it (sets `watched = false`, item hidden), undoable in Settings.
+
+### UI (Slack tab)
+- List = channels, not messages. Columns: channel, client, preview of oldest pending message, waiting time (since oldest pending), pending count, last activity.
+- Sort: `needs_reply` first by oldest pending ascending; then `no_reply_needed` by last activity descending. Same two tabs as email; filters: client, team, waiting time, low confidence.
+- Opening a channel shows the last 50 messages (threads expandable), pending client messages highlighted, each with a "Mark answered" action, and the reply composer at the bottom.
+
+### Tests
+- Channel with one unanswered client question → needs_reply, pending_count 1.
+- Thread reply / ✅ / internal top-level reply → channel moves to no_reply_needed.
+- Pending question in a thread while the main channel is answered → channel still needs_reply.
+- Client "thanks 👍" after our reply → no_reply_needed, reason not_needed.
+- Internal message @mentioning only a colleague → channel stays needs_reply.
+- Mark all answered → no_reply_needed, audit row written.

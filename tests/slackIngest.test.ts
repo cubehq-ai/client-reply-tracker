@@ -173,3 +173,43 @@ describe('channel mapping', () => {
     expect(rows[0].watched).toBe(true);
   });
 });
+
+describe('ownership', () => {
+  it('takes the owner from the internal people the client addressed', async () => {
+    await workspace([
+      msg({ ts: T(0), userId: CLIENT, text: `Hi <@${US}> and team, can you check the campaign?` }),
+    ]);
+    await run();
+    const rows = await query<any>(
+      `SELECT su.name FROM items i JOIN slack_users su ON su.id = i.slack_owner_id
+        WHERE i.slack_channel_id = $1`, [CH]);
+    expect(rows[0]?.name).toBe('Priya');
+  });
+
+  it('names a person with no ReplyQueue account, rather than leaving it unowned', async () => {
+    // Most of the workspace has no account here; insisting on one left every
+    // Slack row reading "owner: unowned".
+    await query(`DELETE FROM users WHERE email = 'priya@cubehq.ai'`);
+    await workspace([
+      msg({ ts: T(0), userId: CLIENT, text: `Hi <@${US}>, could you send the report?` }),
+    ]);
+    await run();
+    const rows = await query<any>(
+      `SELECT su.name, i.owner_user_id FROM items i JOIN slack_users su ON su.id = i.slack_owner_id
+        WHERE i.slack_channel_id = $1`, [CH]);
+    expect(rows[0]?.name).toBe('Priya');
+    expect(rows[0]?.owner_user_id).toBeNull();
+  });
+
+  it('falls back to whoever from our side last spoke in the channel', async () => {
+    await workspace([
+      msg({ ts: T(0), userId: US, text: 'morning all' }),
+      msg({ ts: T(30), userId: CLIENT, text: 'Could you send the report over?' }),
+    ]);
+    await run();
+    const rows = await query<any>(
+      `SELECT su.name FROM items i JOIN slack_users su ON su.id = i.slack_owner_id
+        WHERE i.slack_channel_id = $1`, [CH]);
+    expect(rows[0]?.name).toBe('Priya');
+  });
+});

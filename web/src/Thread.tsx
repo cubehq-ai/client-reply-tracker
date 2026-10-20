@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type ThreadView, type User } from './api';
 import { Message } from './Message';
+import { useDrawerWidth } from './useDrawerWidth';
 
 const IGNORE_REASONS = [
   { value: 'not_needed', label: 'No reply needed' },
@@ -15,9 +16,6 @@ const IGNORE_SCOPES = [
   { value: 'sender', label: 'Always ignore this sender' },
   { value: 'domain', label: 'Always ignore this domain' },
 ];
-
-const WIDTH_KEY = 'rq.drawer.width';
-const MIN_WIDTH = 420;
 
 export function Thread({ itemId, user, clients, onClose, onChanged }: {
   itemId: number; user: User; clients: any[];
@@ -39,10 +37,7 @@ export function Thread({ itemId, user, clients, onClose, onChanged }: {
   const [sendAs, setSendAs] = useState('');
   const composerRef = useRef<HTMLDivElement | null>(null);
 
-  const [width, setWidth] = useState(() => {
-    const stored = Number(localStorage.getItem(WIDTH_KEY));
-    return Number.isFinite(stored) && stored >= MIN_WIDTH ? stored : 780;
-  });
+  const { width, startResize } = useDrawerWidth();
 
   useEffect(() => {
     let live = true;
@@ -75,23 +70,6 @@ export function Thread({ itemId, user, clients, onClose, onChanged }: {
     };
   }, [itemId, user.email]);
 
-  // Drag the left edge to resize; the width is remembered per browser.
-  const startResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const move = (ev: MouseEvent) => {
-      const next = Math.min(window.innerWidth - 120, Math.max(MIN_WIDTH, window.innerWidth - ev.clientX));
-      setWidth(next);
-    };
-    const stop = () => {
-      window.removeEventListener('mousemove', move);
-      window.removeEventListener('mouseup', stop);
-      document.body.style.userSelect = '';
-      setWidth((w) => { localStorage.setItem(WIDTH_KEY, String(w)); return w; });
-    };
-    document.body.style.userSelect = 'none';
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', stop);
-  }, []);
 
   async function run(fn: () => Promise<any>, message: string) {
     setBusy(true);

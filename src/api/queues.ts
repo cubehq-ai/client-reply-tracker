@@ -199,6 +199,7 @@ export async function listQueue(
                WHERE m.conversation_id = i.conversation_id AND mc.deleted = false) AS mailboxes,
              (SELECT l.user_email FROM item_locks l WHERE l.item_id = i.id AND l.expires_at > now()) AS locked_by,
              sc.name AS slack_channel_name,
+             so.name AS slack_owner_name,
              (SELECT COALESCE(su.name, sm.user_id) FROM slack_messages sm
                 LEFT JOIN slack_users su ON su.id = sm.user_id
                WHERE sm.channel_id = i.slack_channel_id AND sm.ts = i.slack_group_ts) AS slack_author,
@@ -221,6 +222,7 @@ export async function listQueue(
         LEFT JOIN teams t_owner ON t_owner.id = u.team_id
         LEFT JOIN teams t_mb ON t_mb.id = mb_team.team_id
         LEFT JOIN slack_channels sc ON sc.id = i.slack_channel_id
+        LEFT JOIN slack_users so ON so.id = i.slack_owner_id
        WHERE ${where.join(' AND ')}
        ORDER BY ${orderClause(queue)}
        LIMIT ${limit} OFFSET ${offset}
@@ -249,7 +251,9 @@ export async function listQueue(
       subject: r.subject ?? '(no subject)',
       clientId: r.client_id ? Number(r.client_id) : null,
       clientName: r.client_name,
-      ownerEmail: r.owner_email,
+      // Most of the Slack workspace has no account here, so the person a
+      // client addressed is named rather than left as "unowned".
+      ownerEmail: r.owner_email ?? r.slack_owner_name ?? null,
       summary: r.source === 'slack' ? render(r.summary) : r.summary,
       reason: r.reason,
       confidence: r.needs_reply_confidence === null ? null : Number(r.needs_reply_confidence),

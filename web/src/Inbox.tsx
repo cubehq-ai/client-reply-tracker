@@ -256,7 +256,9 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
               <span className={`tag ${it.clientName ? 'client' : ''}`}>{it.clientName ?? 'unmatched'}</span>
               {it.teamName && <span className="tag">{it.teamName}</span>}
               <span>{it.source === 'slack' ? (it.fromName ?? it.fromEmail) : it.fromEmail}</span>
-              <span>owner: {it.ownerEmail ?? 'unowned'}</span>
+              {/* "owner: unowned" on every row said nothing. Show it when
+                  somebody actually owns the item. */}
+              {it.ownerEmail && <span>owner: {it.ownerEmail}</span>}
 
               {(it.source === 'slack' ? (it.snippet ?? it.summary) : it.summary) && (
                 <span style={{ flexBasis: '100%' }}>
