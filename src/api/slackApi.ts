@@ -1,8 +1,8 @@
 import { query } from '../db/pool.js';
-import { config, slackEnabled } from '../lib/config.js';
-import { getSlackClient } from '../slack/index.js';
+import { config } from '../lib/config.js';
+import { getSlackClient, slackConfigured } from '../slack/index.js';
 import { slackIdentity } from '../slack/sync.js';
-import { reconcileChannel, syncOneChannel } from '../slack/ingest.js';
+import { reconcileChannel, syncOneChannel, writeChannelItem } from '../slack/ingest.js';
 import { invalidateOrgContext } from '../pipeline/context.js';
 import { renderSlackText } from '../slack/text.js';
 import type { SessionUser } from './auth.js';
@@ -19,7 +19,7 @@ export interface SlackStatus {
 }
 
 export async function slackStatus(): Promise<SlackStatus> {
-  if (!slackEnabled()) {
+  if (!slackConfigured()) {
     return { connected: false, sendEnabled: false, postingAs: null, watchedChannels: 0, unmappedChannels: 0 };
   }
   const counts = await query<{ watched: string; unmapped: string }>(
@@ -87,7 +87,7 @@ export async function updateSlackChannel(
   // Watching a channel for the first time backfills it, so mapping one is
   // useful immediately rather than at the next poll.
   const row = await query<any>('SELECT name, watched, last_synced_ts, backfilled_at FROM slack_channels WHERE id = $1', [channelId]);
-  const shouldBackfill = row[0].watched && row[0].backfilled_at == null && slackEnabled();
+  const shouldBackfill = row[0].watched && row[0].backfilled_at == null && slackConfigured();
   if (shouldBackfill) {
     await syncOneChannel(channelId, row[0].name, null, false);
     return { ok: true, backfilled: true };
@@ -99,9 +99,11 @@ export async function updateSlackChannel(
 export interface SlackThreadView {
   channelId: string;
   channelName: string;
+  clientName: string | null;
   permalink: string | null;
   postingAs: string | null;
-  groupTs: string;
+  pendingCount: number;
+  oldestPendingTs: string | null;
   messages: {
     ts: string;
     author: string;
@@ -110,68 +112,58 @@ export interface SlackThreadView {
     text: string;
     at: string;
     threadOf: string | null;
-    inGroup: boolean;
+    pending: boolean;
     deleted: boolean;
     reactions: Record<string, string[]>;
   }[];
 }
 
 /**
- * The channel around a Slack item: ten messages before the group, everything
- * after it, and the group's thread. Context is what makes a channel message
- * readable -- a bare line out of a conversation rarely is.
+ * The channel behind an item: its last 50 messages, with the ones still
+ * waiting on us marked. A channel is the unit of work, so the view is the
+ * channel rather than an extract around one message.
  */
 export async function getSlackThread(itemId: number): Promise<SlackThreadView> {
   const item = await query<any>(
-    `SELECT i.slack_channel_id, i.slack_group_ts, sc.name
-       FROM items i JOIN slack_channels sc ON sc.id = i.slack_channel_id
+    `SELECT i.slack_channel_id, i.pending_count, i.oldest_pending_ts, sc.name, cl.name AS client_name
+       FROM items i
+       JOIN slack_channels sc ON sc.id = i.slack_channel_id
+       LEFT JOIN clients cl ON cl.id = i.client_id
       WHERE i.id = $1`,
     [itemId],
   );
   if (!item[0]) throw new HttpError(404, 'not a slack item');
-  const { slack_channel_id: channelId, slack_group_ts: groupTs, name } = item[0];
+  const channelId = item[0].slack_channel_id;
 
   const rows = await query<any>(
-    `WITH before AS (
-       SELECT * FROM slack_messages
-        WHERE channel_id = $1 AND ts < $2 AND (thread_ts IS NULL OR thread_ts = ts)
-        ORDER BY ts DESC LIMIT 10
-     ), rest AS (
-       SELECT * FROM slack_messages
-        WHERE channel_id = $1 AND (ts >= $2 OR thread_ts = $2)
-     )
-     SELECT m.*, COALESCE(u.name, m.user_id) AS author
-       FROM (SELECT * FROM before UNION SELECT * FROM rest) m
-       LEFT JOIN slack_users u ON u.id = m.user_id
-      ORDER BY m.ts ASC`,
-    [channelId, groupTs],
+    `SELECT * FROM (
+       SELECT m.*, COALESCE(u.name, m.user_id) AS author
+         FROM slack_messages m
+         LEFT JOIN slack_users u ON u.id = m.user_id
+        WHERE m.channel_id = $1
+        ORDER BY m.ts DESC
+        LIMIT 50
+     ) recent ORDER BY ts ASC`,
+    [channelId],
   );
 
-  const groupIds = await query<{ ts: string }>(
-    `SELECT ts FROM slack_messages WHERE channel_id = $1 AND conversation_id =
-       (SELECT conversation_id FROM items WHERE id = $2)`,
-    [channelId, itemId],
-  );
-  const inGroup = new Set(groupIds.map((g) => g.ts));
-
-  // Mentions are ids on the wire; without the names the text is unreadable.
   const nameRows = await query<{ id: string; name: string }>('SELECT id, name FROM slack_users');
   const names = new Map(nameRows.map((r) => [r.id, r.name]));
 
   let permalink: string | null = null;
-  if (slackEnabled()) permalink = await getSlackClient().permalink(channelId, groupTs);
+  if (slackConfigured()) permalink = await getSlackClient().permalink(channelId, item[0].oldest_pending_ts ?? rows[rows.length - 1]?.ts ?? '');
 
   let postingAs: string | null = null;
-  try {
-    postingAs = slackEnabled() ? (await slackIdentity()).userName : null;
-  } catch { postingAs = null; }
+  try { postingAs = slackConfigured() ? (await slackIdentity()).userName : null; } catch { postingAs = null; }
 
   return {
     channelId,
-    channelName: name,
+    channelName: item[0].name,
+    clientName: item[0].client_name ?? null,
     permalink,
     postingAs,
-    groupTs,
+    pendingCount: Number(item[0].pending_count ?? 0),
+    oldestPendingTs: item[0].oldest_pending_ts ?? null,
     messages: rows.map((r) => ({
       ts: r.ts,
       author: r.author ?? 'unknown',
@@ -180,7 +172,7 @@ export async function getSlackThread(itemId: number): Promise<SlackThreadView> {
       text: renderSlackText(r.text, names),
       at: new Date(r.posted_at).toISOString(),
       threadOf: r.thread_ts && r.thread_ts !== r.ts ? r.thread_ts : null,
-      inGroup: inGroup.has(r.ts),
+      pending: Boolean(r.pending),
       deleted: r.deleted,
       reactions: r.reactions ?? {},
     })),
@@ -188,29 +180,43 @@ export async function getSlackThread(itemId: number): Promise<SlackThreadView> {
 }
 
 /**
- * Replies to a Slack item.
+ * Marks client messages answered by hand.
  *
- * Always as a thread reply on the group's first message: that is what makes
- * the reply detectable on the next pass, whoever posted it and wherever the
- * channel has moved to since.
+ * Without a ts it clears the whole channel: "mark as read", for the common
+ * case where the conversation was handled in Slack itself, or in a call, and
+ * the queue is simply out of date. Unwatching a channel entirely is a
+ * different decision and lives in Settings.
  */
-export async function sendSlackReply(
+export async function markSlackAnswered(
   user: SessionUser,
   itemId: number,
-  text: string,
-): Promise<{ ok: true; dryRun: boolean; ts: string }> {
-  if (!text.trim()) throw new HttpError(400, 'nothing to send');
+  ts: string | null,
+): Promise<{ ok: true; cleared: number }> {
   const item = await query<any>(
-    'SELECT slack_channel_id, slack_group_ts, conversation_id FROM items WHERE id = $1',
+    'SELECT slack_channel_id FROM items WHERE id = $1 AND slack_channel_id IS NOT NULL',
     [itemId],
   );
-  if (!item[0]?.slack_channel_id) throw new HttpError(404, 'not a slack item');
+  if (!item[0]) throw new HttpError(404, 'not a slack item');
+  const channelId = item[0].slack_channel_id;
 
-  const result = await getSlackClient().postMessage(item[0].slack_channel_id, text, item[0].slack_group_ts);
+  // Recorded, not just unset: reconciliation recomputes `pending` from the
+  // rules on every pass and would otherwise reopen this within minutes.
+  const cleared = ts
+    ? await query(
+        `UPDATE slack_messages SET pending = false, answered_at = now(), answered_by = $3
+          WHERE channel_id = $1 AND ts = $2 AND pending RETURNING id`,
+        [channelId, ts, user.email])
+    : await query(
+        `UPDATE slack_messages SET pending = false, answered_at = now(), answered_by = $2
+          WHERE channel_id = $1 AND pending RETURNING id`,
+        [channelId, user.email]);
 
-  await audit(user, 'slack_reply', itemId, { dryRun: result.dryRun, channel: item[0].slack_channel_id });
+  const ch = await query<any>('SELECT name, client_id FROM slack_channels WHERE id = $1', [channelId]);
+  await writeChannelItem(channelId, ch[0].name, ch[0].client_id == null ? null : Number(ch[0].client_id), false);
 
-  // The item closes when sync sees the posted message, not now: a dry run
-  // posts nothing, and treating it as answered would hide a real obligation.
-  return { ok: true, dryRun: result.dryRun, ts: result.ts };
+  await audit(user, ts ? 'slack_mark_answered' : 'slack_mark_channel_read', itemId, {
+    channel: channelId, ts, cleared: cleared.length,
+  });
+  return { ok: true, cleared: cleared.length };
 }
+

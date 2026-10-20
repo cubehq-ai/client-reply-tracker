@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { api, timeAgo } from './api';
-import { Rules } from './Rules';
 
 /** Tolerates a scalar, a Postgres array literal, or a real array. */
 function toList(value: unknown): string[] {
@@ -15,7 +14,6 @@ function toList(value: unknown): string[] {
 const TABS = [
   { key: 'mailboxes', label: 'Mailboxes & teams' },
   { key: 'clients', label: 'Clients & domains' },
-  { key: 'rules', label: 'Matching rules' },
   { key: 'slack', label: 'Slack channels' },
 ];
 
@@ -31,7 +29,6 @@ export function Settings({ onChanged, clients }: { onChanged: () => void; client
       </div>
       {tab === 'mailboxes' && <Mailboxes onChanged={onChanged} />}
       {tab === 'clients' && <Clients onChanged={onChanged} />}
-      {tab === 'rules' && <Rules clients={clients} onChanged={onChanged} />}
       {tab === 'slack' && <SlackChannels clients={clients} onChanged={onChanged} />}
     </>
   );

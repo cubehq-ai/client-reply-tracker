@@ -59,7 +59,12 @@ export function startWorker(): void {
   cron.schedule('*/10 * * * *', guarded('sync', syncAllMailboxes), { timezone: tz });
 
   // Client + domain sync from the dashboard DB (SPEC 10).
-  cron.schedule('*/15 * * * *', guarded('sync-clients', () => syncClients()), { timezone: tz });
+  //
+  // Hourly, not every 15 minutes: the pass takes the better part of a minute
+  // against the dashboard's Mongo, and clients and their domains change on
+  // the order of days. Settings can sync on demand when something needs
+  // picking up sooner.
+  cron.schedule('0 * * * *', guarded('sync-clients', () => syncClients()), { timezone: tz });
 
   // Teams and membership from the same dashboard, once a day at 18:00. People
   // join, leave or change team rarely, and Settings can sync on demand when

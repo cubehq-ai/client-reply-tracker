@@ -69,8 +69,11 @@ const AUDIT = () => {
 
   // 4. Controls sharing a row should share a height.
   for (const bar of document.querySelectorAll('.toolbar, .toolbar-filters, .toolbar-actions, .section-actions')) {
+    // A grouped control is measured as one thing: the waiting filter's select
+    // sits inside the pill's border, so it is legitimately 2px shorter.
     const heights = new Set(
-      [...bar.querySelectorAll('select, input:not([type=checkbox]), .btn, .multiselect-trigger')]
+      [...bar.querySelectorAll('select, input:not([type=checkbox]), .btn, .multiselect-trigger, .wait-filter')]
+        .filter((e) => !e.closest('.wait-filter') || e.classList.contains('wait-filter'))
         .map((e) => round(e.getBoundingClientRect().height))
         .filter((h) => h > 0),
     );
@@ -138,7 +141,9 @@ for (const nav of ['Clients', 'Teams', 'Settings']) {
   await page.click(`.nav-item:has-text("${nav}")`);
   await audit(nav);
 }
-for (const tab of ['Mailboxes & teams', 'Clients & domains', 'Matching rules']) {
+// Matching rules was removed from Settings; the engine still runs, it just
+// has no editor.
+for (const tab of ['Mailboxes & teams', 'Clients & domains', 'Slack channels']) {
   await page.click(`.tab:has-text("${tab}")`);
   await audit(`Settings / ${tab}`);
 }

@@ -11,8 +11,11 @@ export interface QueueItem {
   fromEmail: string | null; snippet: string | null;
   mailboxes: string[]; teamName: string | null; lockedBy: string | null;
   source: 'gmail' | 'slack';
+  addressedTo: string[];
   slackChannelId: string | null; slackChannelName: string | null;
   fromName: string | null;
+  pendingCount: number; oldestPendingAt: string | null;
+  lastActivityAt: string | null; preview: string | null;
 }
 
 export interface SlackStatus {
@@ -24,11 +27,12 @@ export interface SlackStatus {
 }
 
 export interface SlackThread {
-  channelId: string; channelName: string; permalink: string | null;
-  postingAs: string | null; groupTs: string;
+  channelId: string; channelName: string; clientName: string | null;
+  permalink: string | null; postingAs: string | null;
+  pendingCount: number; oldestPendingTs: string | null;
   messages: {
     ts: string; author: string; authorId: string | null; isInternal: boolean;
-    text: string; at: string; threadOf: string | null; inGroup: boolean;
+    text: string; at: string; threadOf: string | null; pending: boolean;
     deleted: boolean; reactions: Record<string, string[]>;
   }[];
 }
@@ -97,8 +101,15 @@ export const api = {
   updateSlackChannel: (id: string, patch: { clientId?: number | null; watched?: boolean }) =>
     request<{ ok: true; backfilled: boolean }>(`/api/slack/channels/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   slackThread: (itemId: number) => request<SlackThread>(`/api/items/${itemId}/slack-thread`),
-  slackReply: (itemId: number, text: string) =>
-    request<{ ok: true; dryRun: boolean; ts: string }>(`/api/items/${itemId}/slack-reply`, { method: 'POST', body: JSON.stringify({ text }) }),
+  /** Clears one message, or the whole channel when ts is null. */
+  slackAnswered: (itemId: number, ts: string) =>
+    request<{ ok: true; cleared: number }>(`/api/items/${itemId}/slack-answered`, {
+      method: 'POST', body: JSON.stringify({ ts }),
+    }),
+  slackMarkRead: (itemId: number) =>
+    request<{ ok: true; cleared: number }>(`/api/items/${itemId}/slack-answered`, {
+      method: 'POST', body: JSON.stringify({ ts: null }),
+    }),
 
   settingsMailboxes: () => request<{ mailboxes: any[]; teams: any[] }>('/api/settings/mailboxes'),
   newPeople: (all = false) => request<{ people: any[]; error?: string }>(`/api/settings/new-people?all=${all}`),

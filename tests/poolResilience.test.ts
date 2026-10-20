@@ -42,3 +42,20 @@ describe('retrying', () => {
     expect(calls).toBe(1);
   });
 });
+
+describe('a client that drops mid-query', () => {
+  it('does not take the process down', async () => {
+    // pg emits on the client, not the pool, when the client is checked out.
+    // Unhandled, that is an uncaught 'error' event and the worker dies --
+    // which is how a long job on a dropped connection killed it.
+    const { getPool } = await import('../src/db/pool.js');
+    const client = await getPool().connect();
+    try {
+      expect(client.listenerCount('error')).toBeGreaterThan(0);
+      // Emitting with a listener attached must not throw.
+      expect(() => client.emit('error', Object.assign(new Error('ETIMEDOUT'), { code: 'ETIMEDOUT' }))).not.toThrow();
+    } finally {
+      client.release();
+    }
+  });
+});

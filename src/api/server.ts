@@ -29,7 +29,9 @@ import {
 import { draftReply, getThread, sendReply } from './compose.js';
 import { fetchAttachment } from './attachments.js';
 import { clientOverview, inboxFacets, listQueue, queueCounts, teamOverview, type QueueFilters, type QueueName } from './queues.js';
-import { getSlackThread, listSlackChannels, sendSlackReply, slackStatus, updateSlackChannel } from './slackApi.js';
+import {
+  getSlackThread, listSlackChannels, markSlackAnswered, slackStatus, updateSlackChannel,
+} from './slackApi.js';
 import {
   addClientDomain, addClientPattern, addMailbox, addMailboxesBulk, applyDomainSuggestions, createClient, createSavedView,
   createTeam, deleteSavedView, deleteTeam, listClientsDetailed, listMailboxes, listSavedViews,
@@ -132,14 +134,14 @@ export async function buildServer(): Promise<FastifyInstance> {
       ownerUserIds: ids(q.ownerUserIds ?? q.ownerUserId),
       teamIds: ids(q.teamIds ?? q.teamId),
       mailbox: q.mailbox,
-      ages: strs(q.ages ?? q.age),
+      waitHours: q.waitHours ? Math.max(0, Math.min(8760, Number(q.waitHours))) : undefined,
+      waitOp: q.waitOp === 'lt' ? 'lt' : 'gt',
       reasons: strs(q.reasons),
       intent: q.intent,
       view: (q.view as QueueFilters['view']) ?? 'all',
       search: q.search,
       source: (q.source as QueueFilters['source']) ?? undefined,
       status: q.status ? q.status.split(',').filter(Boolean) : undefined,
-      freshness: (q.freshness as QueueFilters['freshness']) ?? undefined,
       unmatched: q.unmatched === 'true',
       lowConfidence: q.lowConfidence === 'true',
       muted: q.muted === 'true',
@@ -154,12 +156,12 @@ export async function buildServer(): Promise<FastifyInstance> {
     return listQueue(user, name, parseFilters(req.query as Record<string, string>));
   });
 
-  // Two tabs: needs_reply and no_reply_needed. Everything else is a filter.
+  // Three tabs: needs_reply, no_reply_needed, and all (their union).
   app.get('/api/inbox', async (req) => {
     const user = await requireUser(req);
     const q = req.query as Record<string, string>;
     const filters = parseFilters(q);
-    const tab = (q.tab === 'no_reply_needed' ? 'no_reply_needed' : 'needs_reply') as QueueName;
+    const tab = (q.tab === 'no_reply_needed' || q.tab === 'all' ? q.tab : 'needs_reply') as QueueName;
     const [list, facets] = await Promise.all([
       listQueue(user, tab, filters),
       inboxFacets(user, filters, tab),
@@ -238,11 +240,12 @@ export async function buildServer(): Promise<FastifyInstance> {
     return getSlackThread(itemId(req));
   });
 
-  app.post('/api/items/:id/slack-reply', async (req) => {
+  app.post('/api/items/:id/slack-answered', async (req) => {
     const user = await requireUser(req);
-    const body = (req.body ?? {}) as { text?: string };
-    return sendSlackReply(user, itemId(req), String(body.text ?? ''));
+    const body = (req.body ?? {}) as { ts?: string | null };
+    return markSlackAnswered(user, itemId(req), body.ts ?? null);
   });
+
 
   app.get('/api/items/:id/events', async (req) => {
     await requireUser(req);

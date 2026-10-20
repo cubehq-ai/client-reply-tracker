@@ -17,7 +17,11 @@
     "cli": "tsx src/cli.ts",
     "test": "vitest run",
     "audit": "node scripts/audit.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/src/api/server.js",
+    "start:worker": "node dist/src/worker/index.js",
+    "migrate:prod": "node dist/src/db/migrate.js",
+    "jobs-qa": "tsx scripts/jobs-qa.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",

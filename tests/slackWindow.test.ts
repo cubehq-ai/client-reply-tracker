@@ -16,14 +16,11 @@ const CLIENT = 'U_CLIENT';
 const BASE = Math.floor(Date.now() / 1000) - 4 * 3600;
 const T = (minute: number): string => String(BASE + minute * 60);
 
-/** Answers the window prompt with a fixed partition. */
-function modelReturning(answered: string[], unanswered: string[]): LlmClient {
+/** Answers the window prompt with a fixed list of still-unanswered ids. */
+function modelReturning(unanswered: string[]): LlmClient {
   return {
     classify: async () => ({ needsReply: true, confidence: 0.9, summary: 'q', tier: 'llm' as const }),
-    draftReply: async () => JSON.stringify({
-      answered_client_message_ids: answered,
-      unanswered_client_message_ids: unanswered,
-    }),
+    draftReply: async () => JSON.stringify({ unanswered_client_message_ids: unanswered }),
   };
 }
 
@@ -54,9 +51,14 @@ async function twoPendingGroups(): Promise<void> {
   await syncOneChannel(CH, ch[0].name, null, false);
 }
 
-const items = async (): Promise<any[]> =>
-  query(`SELECT slack_group_ts, state, reason, low_confidence FROM items
-          WHERE slack_channel_id = $1 ORDER BY slack_group_ts ASC`, [CH]);
+const item = async (): Promise<any> =>
+  (await query<any>(
+    `SELECT state, reason, low_confidence, pending_count, oldest_pending_ts
+       FROM items WHERE slack_channel_id = $1`, [CH]))[0];
+
+const pending = async (): Promise<string[]> =>
+  (await query<{ ts: string }>(
+    'SELECT ts FROM slack_messages WHERE channel_id = $1 AND pending ORDER BY ts', [CH])).map((r) => r.ts);
 
 beforeAll(async () => { await setupSchema(); });
 afterAll(async () => { setSlackClient(null); await teardown(); });
@@ -64,30 +66,46 @@ beforeEach(async () => { await twoPendingGroups(); });
 
 describe('the llm window', () => {
   it('waits for the channel to go quiet before spending a call', async () => {
-    // The newest message is minutes old, so the debounce has not elapsed.
     await query('UPDATE slack_channels SET last_message_at = now() WHERE id = $1', [CH]);
-    setLlmClient(modelReturning([T(0), T(30)], []));
+    setLlmClient(modelReturning([T(0), T(30)]));
     const r = await runSlackWindows(new Date(), true);
     expect(r[0]).toMatchObject({ skipped: 'quiet-pending', decided: 0 });
-    expect((await items()).every((i) => i.state === 'needs_reply')).toBe(true);
   });
 
-  it('closes the groups the model says were answered', async () => {
+  it('reopens the questions the model says were never answered', async () => {
+    // One reply was credited with answering both; the model says only the
+    // first was.
     await query(`UPDATE slack_channels SET last_message_at = now() - interval '30 minutes' WHERE id = $1`, [CH]);
-    setLlmClient(modelReturning([T(0), T(30)], []));
+    setLlmClient(modelReturning([T(30)]));
     await runSlackWindows(new Date(), true);
-    const rows = await items();
-    expect(rows).toHaveLength(2);
-    expect(rows.every((r) => r.state === 'no_reply_needed' && r.reason === 'replied')).toBe(true);
+
+    expect(await pending()).toEqual([T(30)]);
+    expect(await item()).toMatchObject({ state: 'needs_reply', pending_count: 1, oldest_pending_ts: T(30) });
   });
 
-  it('leaves an unanswered group open, but no longer a guess', async () => {
+  it('leaves the channel answered when the model agrees both were', async () => {
     await query(`UPDATE slack_channels SET last_message_at = now() - interval '30 minutes' WHERE id = $1`, [CH]);
-    setLlmClient(modelReturning([T(0)], [T(30)]));
+    setLlmClient(modelReturning([]));
     await runSlackWindows(new Date(), true);
-    const rows = await items();
-    expect(rows[0]).toMatchObject({ state: 'no_reply_needed', reason: 'replied' });
-    expect(rows[1]).toMatchObject({ state: 'needs_reply', low_confidence: false });
+    expect(await pending()).toEqual([]);
+    expect(await item()).toMatchObject({ state: 'no_reply_needed' });
+  });
+
+  it('will not reopen something a fact closed', async () => {
+    // The model is only allowed to overturn rule 3's guess. A tick or a
+    // thread reply is not its to argue with.
+    await query('UPDATE slack_messages SET reactions = $2::jsonb WHERE channel_id = $1 AND ts = $3',
+      [CH, JSON.stringify({ white_check_mark: [US] }), T(0)]);
+    await query(`UPDATE slack_channels SET last_message_at = now() - interval '30 minutes' WHERE id = $1`, [CH]);
+    setLlmClient(modelReturning([T(0), T(30)]));
+    await runSlackWindows(new Date(), true);
+    expect(await pending()).not.toContain(T(0));
+  });
+
+  it('without a model, keeps the guess but says it is one', async () => {
+    await query(`UPDATE slack_channels SET last_message_at = now() - interval '30 minutes' WHERE id = $1`, [CH]);
+    await runSlackWindows(new Date(), false);
+    expect(await item()).toMatchObject({ state: 'no_reply_needed', low_confidence: true });
   });
 
   it('leaves everything alone when the model fails', async () => {
@@ -97,6 +115,6 @@ describe('the llm window', () => {
       draftReply: async () => { throw new Error('model down'); },
     });
     await runSlackWindows(new Date(), true);
-    expect((await items()).every((i) => i.state === 'needs_reply')).toBe(true);
+    expect(await pending()).toEqual([]);
   });
 });

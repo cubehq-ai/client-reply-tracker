@@ -2,6 +2,9 @@ import { query } from '../db/pool.js';
 import { config, useRealClassifier } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { getLlmClient } from '../llm/index.js';
+import { ambiguousClosures, computePending } from './pending.js';
+import { writeChannelItem } from './ingest.js';
+import type { StoredSlackMessage } from './groups.js';
 
 export interface WindowResult {
   channel: string;
@@ -34,10 +37,9 @@ export async function runSlackWindows(
   haveModel: boolean = useRealClassifier(),
 ): Promise<WindowResult[]> {
   const channels = await query<{ id: string; name: string; last_message_at: Date | null }>(
-    `SELECT DISTINCT c.id, c.name, c.last_message_at
+    `SELECT c.id, c.name, c.last_message_at
        FROM slack_channels c
-       JOIN items i ON i.slack_channel_id = c.id
-      WHERE c.watched AND i.state = 'needs_reply' AND i.low_confidence`,
+      WHERE c.watched AND NOT c.is_archived`,
   );
 
   const results: WindowResult[] = [];
@@ -53,64 +55,62 @@ export async function runSlackWindows(
 }
 
 async function runWindowForChannel(channelId: string, channelName: string, haveModel: boolean): Promise<WindowResult> {
-  const pending = await query<{ slack_group_ts: string }>(
-    `SELECT slack_group_ts FROM items
-      WHERE slack_channel_id = $1 AND state = 'needs_reply' AND low_confidence
-      ORDER BY slack_group_ts ASC`,
-    [channelId],
+  // Only the ambiguity matters here: one internal message credited with
+  // answering two or more client messages. Everything else was settled by a
+  // thread reply, a tick or an acknowledgement, which are facts.
+  const messages = await loadMessages(channelId);
+  const internal = new Set(
+    (await query<{ id: string }>('SELECT id FROM slack_users WHERE is_internal')).map((r) => r.id),
   );
-  if (pending.length === 0) return { channel: channelName, decided: 0, skipped: null };
+  const result = computePending(messages, internal);
+  const suspect = ambiguousClosures(result);
+  if (suspect.length === 0) return { channel: channelName, decided: 0, skipped: null };
 
-  // Without a model there is no way to tell which group was answered. Treating
-  // an answered-looking group as replied matches what the channel looks like
-  // to a person, and low_confidence keeps it visible as a guess.
   if (!haveModel) {
-    const closed = await query(
-      `UPDATE items SET state = 'no_reply_needed', reason = 'replied', low_confidence = true, updated_at = now()
-        WHERE slack_channel_id = $1 AND state = 'needs_reply' AND low_confidence
-          AND EXISTS (
-            SELECT 1 FROM slack_messages m
-             WHERE m.channel_id = items.slack_channel_id AND m.is_internal AND NOT m.deleted
-               AND m.ts > items.slack_group_ts
-          )
-        RETURNING id`,
+    // Rule 3's answer stands, but it is a guess about which question was
+    // answered, and the row says so rather than hiding it.
+    await query(
+      `UPDATE items SET low_confidence = true, updated_at = now() WHERE slack_channel_id = $1`,
       [channelId],
     );
-    logger.warn(
-      { channel: channelName, closed: closed.length },
-      'no ANTHROPIC_API_KEY — closing answered-looking slack groups as low confidence',
-    );
-    return { channel: channelName, decided: closed.length, skipped: null };
+    logger.warn({ channel: channelName, suspect: suspect.length },
+      'no ANTHROPIC_API_KEY — keeping rule 3 and marking the channel low confidence');
+    return { channel: channelName, decided: 0, skipped: null };
   }
 
   const window = await buildWindow(channelId);
   if (window.length === 0) return { channel: channelName, decided: 0, skipped: null };
 
-  const verdict = await askModel(channelName, window);
-  if (!verdict) return { channel: channelName, decided: 0, skipped: null };
+  const unanswered = await askModel(channelName, window);
+  if (unanswered == null) return { channel: channelName, decided: 0, skipped: null };
 
-  let decided = 0;
-  if (verdict.answered.length > 0) {
-    const r = await query(
-      `UPDATE items SET state = 'no_reply_needed', reason = 'replied', low_confidence = false, updated_at = now()
-        WHERE slack_channel_id = $1 AND slack_group_ts = ANY($2::text[]) AND state = 'needs_reply'
-        RETURNING id`,
-      [channelId, verdict.answered],
+  // Only the suspect ones may be reopened: a message the model did not look
+  // at, or one closed by a fact, is not its to overturn.
+  const reopen = unanswered.filter((ts) => suspect.includes(ts));
+  if (reopen.length > 0) {
+    await query(
+      'UPDATE slack_messages SET pending = true WHERE channel_id = $1 AND ts = ANY($2::text[])',
+      [channelId, reopen],
     );
-    decided += r.length;
-  }
-  if (verdict.unanswered.length > 0) {
-    // Still open, but no longer a guess: the model looked and said so.
-    const r = await query(
-      `UPDATE items SET low_confidence = false, updated_at = now()
-        WHERE slack_channel_id = $1 AND slack_group_ts = ANY($2::text[]) AND state = 'needs_reply'
-        RETURNING id`,
-      [channelId, verdict.unanswered],
-    );
-    decided += r.length;
   }
 
-  return { channel: channelName, decided, skipped: null };
+  const ch = await query<{ name: string; client_id: string | null }>(
+    'SELECT name, client_id FROM slack_channels WHERE id = $1', [channelId],
+  );
+  await writeChannelItem(channelId, ch[0]!.name, ch[0]!.client_id == null ? null : Number(ch[0]!.client_id), false);
+  return { channel: channelName, decided: reopen.length, skipped: null };
+}
+
+async function loadMessages(channelId: string): Promise<StoredSlackMessage[]> {
+  const rows = await query<any>(
+    `SELECT ts, thread_ts, user_id, is_internal, text, reactions, deleted, posted_at
+       FROM slack_messages WHERE channel_id = $1 ORDER BY ts ASC`,
+    [channelId],
+  );
+  return rows.map((r) => ({
+    ts: r.ts, threadTs: r.thread_ts, userId: r.user_id, isInternal: r.is_internal,
+    text: r.text, reactions: r.reactions ?? {}, deleted: r.deleted, postedAt: new Date(r.posted_at),
+  }));
 }
 
 /** The messages since the last point where nothing was outstanding, capped at 30. */
@@ -136,13 +136,11 @@ async function buildWindow(channelId: string): Promise<WindowMessage[]> {
   }));
 }
 
-interface Verdict { answered: string[]; unanswered: string[] }
-
 /**
- * One internal message can answer several client messages, so the model is
- * asked to partition them rather than judge one at a time.
+ * One internal message can answer several client messages, so the question is
+ * which of them it did NOT answer.
  */
-async function askModel(channelName: string, window: WindowMessage[]): Promise<Verdict | null> {
+async function askModel(channelName: string, window: WindowMessage[]): Promise<string[] | null> {
   const transcript = window
     .map((m) => `[${m.id}] ${m.internal ? 'US' : 'CLIENT'} ${m.author} at ${m.at}${m.threadOf ? ` (in thread ${m.threadOf})` : ''}: ${m.text}`)
     .join('\n');
@@ -156,7 +154,7 @@ async function askModel(channelName: string, window: WindowMessage[]): Promise<V
     'Which CLIENT messages have been answered by a later US message, and which are still waiting on us?',
     'One US message may answer several CLIENT messages. A US message that only talks to colleagues answers nothing.',
     'Reply with strict JSON only:',
-    '{"unanswered_client_message_ids": ["..."], "answered_client_message_ids": ["..."]}',
+    '{"unanswered_client_message_ids": ["..."]}',
   ].join('\n');
 
   try {
@@ -168,10 +166,7 @@ async function askModel(channelName: string, window: WindowMessage[]): Promise<V
     const match = /\{[\s\S]*\}/.exec(raw);
     if (!match) return null;
     const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-    return {
-      answered: asIds(parsed.answered_client_message_ids),
-      unanswered: asIds(parsed.unanswered_client_message_ids),
-    };
+    return asIds(parsed.unanswered_client_message_ids);
   } catch (err) {
     logger.warn({ channel: channelName, err }, 'slack window model call failed; leaving items as they are');
     return null;

@@ -53,8 +53,8 @@ describe('unresponded threshold', () => {
 
   it('filters the list itself, not only the counts', async () => {
     await ageOpenItems(20);
-    const aged = await listQueue(admin, 'needs_reply', { freshness: 'aged' });
-    const fresh = await listQueue(admin, 'needs_reply', { freshness: 'fresh' });
+    const aged = await listQueue(admin, 'needs_reply', { waitHours: 12, waitOp: 'gt' });
+    const fresh = await listQueue(admin, 'needs_reply', { waitHours: 12, waitOp: 'lt' });
     expect(aged.total).toBeGreaterThan(0);
     expect(fresh.total).toBe(0);
   });
@@ -64,5 +64,34 @@ describe('unresponded threshold', () => {
     expect((await inboxFacets(admin, {})).notReplied).toBe(0);
     await ageOpenItems(13);
     expect((await inboxFacets(admin, {})).notReplied).toBeGreaterThan(0);
+  });
+});
+
+describe('the threshold is the reader\u2019s to choose', () => {
+  it('splits the open items at whatever hour is asked for', async () => {
+    await ageOpenItems(20);
+    for (const hours of [1, 6, 12, 19, 21, 48]) {
+      const over = await listQueue(admin, 'needs_reply', { waitHours: hours, waitOp: 'gt' });
+      const under = await listQueue(admin, 'needs_reply', { waitHours: hours, waitOp: 'lt' });
+      const all = await listQueue(admin, 'needs_reply', {});
+      expect(over.total + under.total, `at ${hours}h the two sides must partition the queue`).toBe(all.total);
+    }
+  });
+
+  it('moves an item across the threshold as the hour changes, not only at 12', async () => {
+    await ageOpenItems(20);
+    // 20 hours old: over the line at 19, under it at 21.
+    expect((await listQueue(admin, 'needs_reply', { waitHours: 19, waitOp: 'gt' })).total).toBeGreaterThan(0);
+    expect((await listQueue(admin, 'needs_reply', { waitHours: 21, waitOp: 'gt' })).total).toBe(0);
+    expect((await listQueue(admin, 'needs_reply', { waitHours: 21, waitOp: 'lt' })).total).toBeGreaterThan(0);
+  });
+
+  it('counts follow the chosen threshold rather than the configured one', async () => {
+    await ageOpenItems(20);
+    const at19 = await inboxFacets(admin, { waitHours: 19 });
+    const at21 = await inboxFacets(admin, { waitHours: 21 });
+    expect(at19.notReplied).toBeGreaterThan(0);
+    expect(at21.notReplied).toBe(0);
+    expect(at21.fresh).toBeGreaterThan(0);
   });
 });

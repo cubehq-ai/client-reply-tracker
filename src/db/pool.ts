@@ -70,6 +70,14 @@ function createPool(address?: string): pg.Pool {
   // An idle client dropped by the network emits here. Unhandled, it takes the
   // whole process down; the pool discards the client either way.
   next.on('error', (err) => logger.warn({ err }, 'idle database client errored; it will be replaced'));
+
+  // A client that is checked OUT does not emit on the pool, it emits on
+  // itself -- so a connection dropped mid-query (ETIMEDOUT on a long job,
+  // which Neon does) crashed the worker outright. Every client gets a
+  // listener the moment it connects, whoever is holding it.
+  next.on('connect', (client) => {
+    client.on('error', (err) => logger.warn({ err }, 'database client errored mid-use; the query will reject'));
+  });
   return next;
 }
 
@@ -86,7 +94,7 @@ export const pool = new Proxy({} as pg.Pool, {
 });
 
 const TRANSIENT = new Set([
-  'ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE',
+  'ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH',
   '57P01', // admin_shutdown
   '57P03', // cannot_connect_now
 ]);

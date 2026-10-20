@@ -158,3 +158,22 @@ describe('client listing shape', () => {
     expect(Array.isArray(row.patterns)).toBe(true);
   });
 });
+
+describe('mailbox discovery without an admin subject', () => {
+  it('skips rather than throwing, so the nightly job stops failing silently', async () => {
+    const { config } = await import('../src/lib/config.js');
+    const backend = config.google.backend;
+    const subject = config.google.adminSubject;
+    try {
+      (config.google as any).backend = 'real';
+      (config.google as any).adminSubject = '';
+      const { discoverMailboxes } = await import('../src/sync/discovery.js');
+      const r = await discoverMailboxes();
+      expect(r.skipped).toBe('no_admin_subject');
+      expect(r.mailboxesWatched).toBe(0);
+    } finally {
+      (config.google as any).backend = backend;
+      (config.google as any).adminSubject = subject;
+    }
+  });
+});

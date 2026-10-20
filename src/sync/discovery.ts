@@ -9,6 +9,8 @@ export interface DiscoveryResult {
   mailboxesWatched: number;
   suspended: number;
   reassignedItems: number;
+  /** Set when the job did nothing because it cannot reach the Directory. */
+  skipped?: string;
 }
 
 /**
@@ -17,6 +19,15 @@ export interface DiscoveryResult {
  * manager so nothing silently stops being anyone's problem.
  */
 export async function discoverMailboxes(): Promise<DiscoveryResult> {
+  // The Directory API needs an admin to impersonate. Without one this job
+  // threw every night at 02:00 and the failure sat unread in job_runs;
+  // mailboxes are managed in Settings regardless, so skipping is the honest
+  // outcome rather than an error nobody acts on.
+  if (config.google.backend === 'real' && !config.google.adminSubject) {
+    logger.warn('GOOGLE_ADMIN_SUBJECT is not set — skipping mailbox discovery; add mailboxes in Settings');
+    return { users: 0, mailboxesWatched: 0, suspended: 0, reassignedItems: 0, skipped: 'no_admin_subject' };
+  }
+
   const directory = getDirectoryClient();
   const users = await directory.listUsers();
 

@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, timeAgo, type User } from './api';
 import { Login } from './Login';
 import { Thread } from './Thread';
 import { SlackThread } from './SlackThread';
 import { Inbox, type Filters } from './Inbox';
 import { Settings } from './Settings';
+import { MultiSelect } from './MultiSelect';
 import { ErrorBoundary } from './ErrorBoundary';
+import { readState, writeState } from './urlState';
 
 type Page =
   | { kind: 'inbox'; title: string; subtitle: string; preset: Filters }
@@ -16,7 +18,7 @@ type Page =
 type InboxPage = Extract<Page, { kind: 'inbox' }>;
 
 const INBOX_SUBTITLE =
-  'Two tabs. Everything else — overdue, unmatched, low confidence — is a filter on them.';
+  'Needs reply, no reply needed, or all. Everything else is a filter on them.';
 
 const INBOX: InboxPage = {
   kind: 'inbox',
@@ -29,12 +31,22 @@ export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [googleSso, setGoogleSso] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState<Page>(INBOX);
-  const [filters, setFilters] = useState<Filters>(INBOX.preset);
+  // Restored from the URL, so a reload refreshes what you are looking at
+  // instead of navigating you back to the Email inbox.
+  const restored = readState();
+  const [page, setPage] = useState<Page>(() => {
+    if (!restored || restored.page === 'inbox') {
+      return restored
+        ? { kind: 'inbox', title: restored.title ?? 'Inbox', subtitle: restored.title ? 'Saved view.' : INBOX_SUBTITLE, preset: restored.filters }
+        : INBOX;
+    }
+    return { kind: restored.page } as Page;
+  });
+  const [filters, setFilters] = useState<Filters>(restored?.filters ?? INBOX.preset);
   const [health, setHealth] = useState<any>(null);
-  const [openItem, setOpenItem] = useState<number | null>(null);
+  const [openItem, setOpenItem] = useState<number | null>(restored?.openItem ?? null);
   // Which drawer to render: a Slack item is a channel, not a mail thread.
-  const [openSource, setOpenSource] = useState<'gmail' | 'slack'>('gmail');
+  const [openSource, setOpenSource] = useState<'gmail' | 'slack'>(restored?.openSource ?? 'gmail');
   const [clients, setClients] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [teams, setTeams] = useState<any[]>([]);
@@ -77,6 +89,37 @@ export function App() {
   }, [user]);
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+
+  // Keep the address bar in step with where you are, including the open
+  // drawer, so a reload puts it back.
+  useEffect(() => {
+    if (!user) return;
+    writeState({
+      page: page.kind,
+      title: page.kind === 'inbox' ? page.title : undefined,
+      filters: page.kind === 'inbox' ? filters : {},
+      openItem: openItem ?? undefined,
+      openSource,
+    });
+  }, [user, page, filters, openItem, openSource]);
+
+  /**
+   * Signing out clears where you were, not just who you are.
+   *
+   * The URL carries the view -- tab, filters, the waiting threshold -- so a
+   * refresh puts you back. Left alone through a sign-out it also carried a
+   * previous person's 15-hour threshold into the next session, which looked
+   * like the default had changed.
+   */
+  const signOut = async (): Promise<void> => {
+    await api.logout().catch(() => {});
+    setPage(INBOX);
+    setFilters(INBOX.preset);
+    setOpenItem(null);
+    setOpenSource('gmail');
+    window.history.replaceState(null, '', window.location.pathname);
+    setUser(null);
+  };
 
   const goInbox = (preset: Filters, title = 'Inbox', subtitle = INBOX_SUBTITLE) => {
     setPage({ kind: 'inbox', title, subtitle, preset });
@@ -137,7 +180,7 @@ export function App() {
               Push: <strong>{health.pubsub}</strong>
             </div>
           )}
-          <button className="nav-item" onClick={() => api.logout().then(() => setUser(null))}>Sign out</button>
+          <button className="nav-item" onClick={() => void signOut()}>Sign out</button>
         </div>
       </nav>
 
@@ -162,7 +205,7 @@ export function App() {
           />
         )}
         {page.kind === 'clients' && (
-          <ClientsView clients={clients} onPick={(id) => goInbox({ source: 'gmail', view: 'all', clientId: String(id) }, 'Inbox')} />
+          <ClientsView clients={clients} users={users} onPick={(id) => goInbox({ source: 'gmail', view: 'all', clientId: String(id) }, 'Inbox')} />
         )}
         {page.kind === 'teams' && (
           <TeamsView teams={teams} onPick={(id) => goInbox({ source: 'gmail', view: 'all', teamId: String(id) }, 'Inbox')} />
@@ -190,15 +233,117 @@ export function App() {
   );
 }
 
-function ClientsView({ clients, onPick }: { clients: any[]; onPick: (id: number) => void }) {
+/**
+ * Clients, with a search box and filters.
+ *
+ * The list is every client the dashboard knows, which is well past a hundred
+ * -- long enough that finding one meant scrolling, and "who is waiting on us"
+ * meant reading every row.
+ */
+function ClientsView({ clients, users, onPick }: {
+  clients: any[]; users: any[]; onPick: (id: number) => void;
+}) {
+  const [q, setQ] = useState('');
+  const [services, setServices] = useState<string[]>([]);
+  const [managers, setManagers] = useState<string[]>([]);
+  const [waitingOnly, setWaitingOnly] = useState(false);
+
+  // A client's "tier" is a comma-separated list of services, so the filter
+  // offers the individual services rather than the exact combinations.
+  const serviceOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const c of clients) {
+      for (const part of String(c.tier ?? '').split(',')) {
+        const name = part.trim();
+        if (name) seen.add(name);
+      }
+    }
+    return [...seen].sort().map((name) => ({ value: name, label: name }));
+  }, [clients]);
+
+  const managerOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const c of clients) if (c.account_manager) seen.add(c.account_manager);
+    return [...seen].sort().map((name) => ({ value: name, label: name }));
+  }, [clients]);
+
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return clients.filter((c) => {
+      if (needle && !String(c.name ?? '').toLowerCase().includes(needle)
+        && !String(c.account_manager ?? '').toLowerCase().includes(needle)) return false;
+      if (waitingOnly && Number(c.open_count ?? 0) === 0) return false;
+      if (services.length) {
+        const mine = String(c.tier ?? '').split(',').map((x) => x.trim());
+        if (!services.some((s) => mine.includes(s))) return false;
+      }
+      if (managers.length && !managers.includes(c.account_manager)) return false;
+      return true;
+    });
+  }, [clients, q, services, managers, waitingOnly]);
+
+  const waiting = shown.reduce((n, c) => n + Number(c.open_count ?? 0), 0);
+
   return (
     <>
-      <div className="header"><div><h1>Clients</h1><div className="subtitle">Open volume, age and SLA breaches per client. Click through to that client's mail.</div></div></div>
+      <div className="header">
+        <div>
+          <h1>Clients</h1>
+          <div className="subtitle">Open volume, age and account manager per client. Click through to that client's mail.</div>
+        </div>
+        <div className="muted">{shown.length} of {clients.length} · {waiting} waiting</div>
+      </div>
+
+      <div className="toolbar split">
+        <div className="toolbar-filters">
+          <MultiSelect
+            label="Service"
+            searchable
+            options={serviceOptions}
+            selected={services}
+            onChange={setServices}
+          />
+          <MultiSelect
+            label="Account manager"
+            searchable
+            options={managerOptions}
+            selected={managers}
+            onChange={setManagers}
+          />
+          <button
+            className={`chip ${waitingOnly ? 'on' : ''}`}
+            onClick={() => setWaitingOnly((v) => !v)}
+            title="Only clients with mail waiting on us"
+          >
+            Waiting on us
+          </button>
+        </div>
+        <div className="toolbar-actions">
+          {/* Same markup as the inbox search: the styling hangs off
+              input.toolbar-search, so a wrapper with that class renders a
+              27px box in a row of 34px controls. */}
+          <div className="search-wrap">
+            <svg className="search-icon" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+              <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+            <input
+              type="search"
+              className="toolbar-search"
+              placeholder="Search clients and managers…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            {q && <button className="search-clear" onClick={() => setQ('')} title="Clear search">×</button>}
+          </div>
+        </div>
+      </div>
+
       <div className="card">
         <table>
           <thead><tr><th>Client</th><th>Services</th><th>Account manager</th><th className="num">Waiting</th><th>Longest wait</th></tr></thead>
           <tbody>
-            {clients.map((c) => (
+            {shown.map((c) => (
               <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => onPick(c.id)}>
                 <td><strong>{c.name}</strong></td>
                 <td>{c.tier ?? '—'}</td>
@@ -207,6 +352,9 @@ function ClientsView({ clients, onPick }: { clients: any[]; onPick: (id: number)
                 <td className="muted">{timeAgo(c.oldest_open)}</td>
               </tr>
             ))}
+            {shown.length === 0 && (
+              <tr><td colSpan={5} className="empty">No client matches these filters.</td></tr>
+            )}
           </tbody>
         </table>
       </div>

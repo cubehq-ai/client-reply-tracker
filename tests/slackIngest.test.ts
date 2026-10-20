@@ -49,78 +49,103 @@ const run = async (): Promise<void> => {
   await syncOneChannel(CH, ch[0].name, ch[0].last_synced_ts, ch[0].backfilled_at != null);
 };
 
-const items = async (): Promise<any[]> =>
-  query(`SELECT slack_group_ts, state, reason, low_confidence FROM items
-          WHERE slack_channel_id = $1 ORDER BY slack_group_ts ASC`, [CH]);
+/** The one item for the channel. */
+const item = async (): Promise<any> => {
+  const rows = await query<any>(
+    `SELECT state, reason, low_confidence, pending_count, preview, oldest_pending_ts
+       FROM items WHERE slack_channel_id = $1`, [CH]);
+  return rows[0] ?? null;
+};
 
 beforeAll(async () => { await setupSchema(); });
 afterAll(async () => { setSlackClient(null); await teardown(); });
 beforeEach(() => { setLlmClient(new FakeLlmClient()); });
 
-describe('slack reply detection', () => {
-  it('a thread reply closes the item', async () => {
+describe('a channel is the unit of work', () => {
+  it('one unanswered question leaves the channel needing a reply', async () => {
+    await workspace([msg({ ts: T(0), userId: CLIENT, text: 'Can you check the campaign?' })]);
+    await run();
+    expect(await item()).toMatchObject({ state: 'needs_reply', pending_count: 1 });
+  });
+
+  it('two channels produce two items, not one per message', async () => {
+    await workspace([
+      msg({ ts: T(0), userId: CLIENT, text: 'Can you check the campaign?' }),
+      msg({ ts: T(30), userId: CLIENT, text: 'And the invoice is wrong' }),
+      msg({ ts: T(60), userId: CLIENT, text: 'Also our report is missing a column' }),
+    ]);
+    await run();
+    const rows = await query<any>(`SELECT id FROM items WHERE slack_channel_id = $1`, [CH]);
+    expect(rows).toHaveLength(1);
+    expect(await item()).toMatchObject({ state: 'needs_reply', pending_count: 3 });
+  });
+
+  it('a thread reply moves the channel to answered', async () => {
     await workspace([
       msg({ ts: T(0), userId: CLIENT, text: 'Can you check the campaign?' }),
       msg({ ts: T(5), threadTs: T(0), userId: US, text: 'Looking now' }),
     ]);
     await run();
-    expect(await items()).toEqual([
-      expect.objectContaining({ slack_group_ts: T(0), state: 'no_reply_needed', reason: 'replied' }),
-    ]);
+    expect(await item()).toMatchObject({ state: 'no_reply_needed', reason: 'replied', pending_count: 0 });
   });
 
-  it('a tick from us closes the item', async () => {
+  it('a tick moves the channel to answered', async () => {
     await workspace([
       msg({ ts: T(0), userId: CLIENT, text: 'Please publish the guide', reactions: { white_check_mark: [US] } }),
     ]);
     await run();
-    expect((await items())[0]).toMatchObject({ state: 'no_reply_needed', reason: 'replied' });
+    expect(await item()).toMatchObject({ state: 'no_reply_needed', reason: 'replied' });
   });
 
-  it('a burst of three becomes one item, closed by one reply', async () => {
+  it('a top-level reply moves the channel to answered', async () => {
     await workspace([
-      msg({ ts: T(0), userId: CLIENT, text: 'Hi, quick question' }),
-      msg({ ts: T(1), userId: CLIENT, text: 'The report is missing a column' }),
-      msg({ ts: T(2), userId: CLIENT, text: 'Can you add it?' }),
-      msg({ ts: T(6), userId: US, text: 'Added, take a look' }),
+      msg({ ts: T(0), userId: CLIENT, text: 'Can you check the campaign?' }),
+      msg({ ts: T(5), userId: US, text: 'Done, have a look' }),
     ]);
     await run();
-    const rows = await items();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ slack_group_ts: T(0), state: 'no_reply_needed', reason: 'replied' });
+    expect(await item()).toMatchObject({ state: 'no_reply_needed', reason: 'replied' });
   });
 
-  it('two pending groups and one reply go to the window as low confidence', async () => {
+  it('a question in a thread keeps the channel open even when the channel itself moved on', async () => {
     await workspace([
-      msg({ ts: T(0), userId: CLIENT, text: 'Can you send the invoice?' }),
-      msg({ ts: T(30), userId: CLIENT, text: 'Also, when does the campaign start?' }),
-      msg({ ts: T(40), userId: US, text: 'Yes on both, today' }),
+      msg({ ts: T(0), userId: CLIENT, text: 'Here is the brief' }),
+      msg({ ts: T(2), threadTs: T(0), userId: CLIENT, text: 'Could you confirm the budget on this?' }),
+      msg({ ts: T(10), userId: US, text: 'Unrelated: the report is live' }),
     ]);
     await run();
-    const rows = await items();
-    expect(rows).toHaveLength(2);
-    expect(rows.every((r) => r.low_confidence)).toBe(true);
+    const row = await item();
+    expect(row).toMatchObject({ state: 'needs_reply' });
+    expect(row.oldest_pending_ts).toBe(T(2));
   });
 
-  it('an internal message mentioning only a colleague leaves the item open', async () => {
+  it('a client "thanks" after our reply closes it as not needed', async () => {
+    await workspace([
+      msg({ ts: T(0), userId: CLIENT, text: 'Can you publish the guide?' }),
+      msg({ ts: T(5), userId: US, text: 'Published' }),
+      msg({ ts: T(10), userId: CLIENT, text: 'thanks 👍' }),
+    ]);
+    await run();
+    expect(await item()).toMatchObject({ state: 'no_reply_needed', reason: 'not_needed', pending_count: 0 });
+  });
+
+  it('chatter that only @mentions a colleague leaves the channel open', async () => {
     await workspace([
       msg({ ts: T(0), userId: CLIENT, text: 'Can you check the campaign?' }),
       msg({ ts: T(5), userId: US, text: `<@${COLLEAGUE}> can you take this one?` }),
     ]);
     await run();
-    expect((await items())[0]).toMatchObject({ state: 'needs_reply' });
+    expect(await item()).toMatchObject({ state: 'needs_reply', pending_count: 1 });
   });
 
-  it('a client "thanks" needs no reply and closes what came before', async () => {
+  it('previews the oldest thing still waiting', async () => {
     await workspace([
-      msg({ ts: T(0), userId: CLIENT, text: 'Can you publish the guide?' }),
-      msg({ ts: T(30), userId: CLIENT, text: 'thanks 👍' }),
+      msg({ ts: T(0), userId: CLIENT, text: 'First: the invoice is wrong' }),
+      msg({ ts: T(30), userId: CLIENT, text: 'Second: the report is late' }),
     ]);
     await run();
-    const rows = await items();
-    expect(rows).toHaveLength(2);
-    expect(rows[1]).toMatchObject({ state: 'no_reply_needed', reason: 'not_needed' });
-    expect(rows[0]).toMatchObject({ state: 'no_reply_needed' });
+    const row = await item();
+    expect(row.preview).toContain('First');
+    expect(row.oldest_pending_ts).toBe(T(0));
   });
 
   it('bot and join messages are not conversation', async () => {
@@ -129,17 +154,43 @@ describe('slack reply detection', () => {
       msg({ ts: T(1), userId: 'B_BOT', text: 'Build passed', isBot: true }),
     ]);
     await run();
-    expect(await items()).toHaveLength(0);
+    expect(await item()).toMatchObject({ pending_count: 0 });
+  });
+});
+
+describe('marking answered by hand', () => {
+  const admin = { id: 0, email: 'dev@cubehq.ai', name: 'Dev', role: 'admin' as const, canSendAsShared: true };
+
+  it('marking the channel read closes it and writes an audit row', async () => {
+    await workspace([
+      msg({ ts: T(0), userId: CLIENT, text: 'Can you check the campaign?' }),
+      msg({ ts: T(30), userId: CLIENT, text: 'And the invoice?' }),
+    ]);
+    await run();
+    const { markSlackAnswered } = await import('../src/api/slackApi.js');
+    const id = (await query<any>('SELECT id FROM items WHERE slack_channel_id = $1', [CH]))[0].id;
+    const r = await markSlackAnswered(admin, Number(id), null);
+
+    expect(r.cleared).toBe(2);
+    expect(await item()).toMatchObject({ state: 'no_reply_needed', pending_count: 0 });
+    const audit = await query<any>(
+      `SELECT action FROM audit_log WHERE item_id = $1 ORDER BY id DESC LIMIT 1`, [id]);
+    expect(audit[0].action).toBe('slack_mark_channel_read');
   });
 
-  it('a deleted client message closes its item as filtered', async () => {
-    await workspace([msg({ ts: T(0), userId: CLIENT, text: 'Can you send the latest invoice please?' })]);
+  it('marking one message answered leaves the others waiting', async () => {
+    await workspace([
+      msg({ ts: T(0), userId: CLIENT, text: 'Can you check the campaign?' }),
+      msg({ ts: T(30), userId: CLIENT, text: 'And the invoice?' }),
+    ]);
     await run();
-    expect((await items())[0]).toMatchObject({ state: 'needs_reply' });
-    await query('UPDATE slack_messages SET deleted = true WHERE channel_id = $1', [CH]);
-    const { reconcileChannel } = await import('../src/slack/ingest.js');
-    await reconcileChannel(CH);
-    expect((await items())[0]).toMatchObject({ state: 'no_reply_needed', reason: 'filtered' });
+    const { markSlackAnswered } = await import('../src/api/slackApi.js');
+    const id = (await query<any>('SELECT id FROM items WHERE slack_channel_id = $1', [CH]))[0].id;
+    await markSlackAnswered(admin, Number(id), T(0));
+
+    const row = await item();
+    expect(row).toMatchObject({ state: 'needs_reply', pending_count: 1 });
+    expect(row.oldest_pending_ts).toBe(T(30));
   });
 });
 
@@ -175,20 +226,7 @@ describe('channel mapping', () => {
 });
 
 describe('ownership', () => {
-  it('takes the owner from the internal people the client addressed', async () => {
-    await workspace([
-      msg({ ts: T(0), userId: CLIENT, text: `Hi <@${US}> and team, can you check the campaign?` }),
-    ]);
-    await run();
-    const rows = await query<any>(
-      `SELECT su.name FROM items i JOIN slack_users su ON su.id = i.slack_owner_id
-        WHERE i.slack_channel_id = $1`, [CH]);
-    expect(rows[0]?.name).toBe('Priya');
-  });
-
-  it('names a person with no ReplyQueue account, rather than leaving it unowned', async () => {
-    // Most of the workspace has no account here; insisting on one left every
-    // Slack row reading "owner: unowned".
+  it('names the internal person the client addressed, account or not', async () => {
     await query(`DELETE FROM users WHERE email = 'priya@cubehq.ai'`);
     await workspace([
       msg({ ts: T(0), userId: CLIENT, text: `Hi <@${US}>, could you send the report?` }),
@@ -211,5 +249,40 @@ describe('ownership', () => {
       `SELECT su.name FROM items i JOIN slack_users su ON su.id = i.slack_owner_id
         WHERE i.slack_channel_id = $1`, [CH]);
     expect(rows[0]?.name).toBe('Priya');
+  });
+});
+
+describe('a manual mark outlasts the next sync', () => {
+  const admin = { id: 0, email: 'dev@cubehq.ai', name: 'Dev', role: 'admin' as const, canSendAsShared: true };
+
+  it('does not reopen a message a person marked answered', async () => {
+    // Reconciliation recomputes pending from the rules every pass, and the
+    // rules cannot know a human looked at it.
+    await workspace([msg({ ts: T(0), userId: CLIENT, text: 'Can you check the campaign?' })]);
+    await run();
+    const { markSlackAnswered } = await import('../src/api/slackApi.js');
+    const id = (await query<any>('SELECT id FROM items WHERE slack_channel_id = $1', [CH]))[0].id;
+    await markSlackAnswered(admin, Number(id), T(0));
+    expect(await item()).toMatchObject({ state: 'no_reply_needed', pending_count: 0 });
+
+    const { reconcileChannel } = await import('../src/slack/ingest.js');
+    await reconcileChannel(CH);
+
+    expect(await item()).toMatchObject({ state: 'no_reply_needed', pending_count: 0 });
+    const row = await query<any>('SELECT pending, answered_by FROM slack_messages WHERE channel_id = $1 AND ts = $2', [CH, T(0)]);
+    expect(row[0].pending).toBe(false);
+    expect(row[0].answered_by).toBe('dev@cubehq.ai');
+  });
+
+  it('still opens a genuinely new client message in that channel', async () => {
+    await workspace([msg({ ts: T(0), userId: CLIENT, text: 'Can you check the campaign?' })]);
+    await run();
+    const { markSlackAnswered } = await import('../src/api/slackApi.js');
+    const id = (await query<any>('SELECT id FROM items WHERE slack_channel_id = $1', [CH]))[0].id;
+    await markSlackAnswered(admin, Number(id), T(0));
+
+    slack.workspace.messages.get(CH)!.push(msg({ ts: T(90), userId: CLIENT, text: 'Any update on the invoice?' }));
+    await run();
+    expect(await item()).toMatchObject({ state: 'needs_reply', pending_count: 1, oldest_pending_ts: T(90) });
   });
 });

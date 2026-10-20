@@ -41,10 +41,14 @@ await page.waitForTimeout(2500);
 async function layoutChecks(label) {
   const r = await page.evaluate(() => {
     const doc = document.documentElement;
-    const heights = new Set(
-      [...document.querySelectorAll('.toolbar select, .toolbar input, .toolbar .btn, .multiselect-trigger')]
-        .map((el) => Math.round(el.getBoundingClientRect().height)),
-    );
+    // Measure each toolbar CONTROL, not the pieces inside a grouped one: the
+    // waiting filter is a single pill, and its select sits inside the pill's
+    // border, so it is legitimately 2px shorter. A control nested in a group
+    // is excluded; the group itself is measured.
+    const controls = [...document.querySelectorAll(
+      '.toolbar select, .toolbar input, .toolbar .btn, .multiselect-trigger, .toolbar .wait-filter',
+    )].filter((el) => !el.closest('.wait-filter') || el.classList.contains('wait-filter'));
+    const heights = new Set(controls.map((el) => Math.round(el.getBoundingClientRect().height)));
     const overflow = [...document.querySelectorAll('.main table, .main .card')]
       .filter((el) => el.scrollWidth > el.clientWidth + 1).length;
     return { hScroll: doc.scrollWidth > doc.clientWidth + 1, heights: [...heights], overflow };
@@ -64,10 +68,20 @@ const inbox = await page.evaluate(() => ({
   tabs: [...document.querySelectorAll('.tab')].map((t) => t.textContent.trim()),
   stateTabs: [...document.querySelectorAll('.state-tabs .tab')].map((t) => t.textContent.replace(/\d+$/, '').trim()),
 }));
-note(inbox.filters.join(',') === 'Client,Team,Recipient,Age', `filters are ${inbox.filters.join(', ')}`);
+note(inbox.filters.join(',') === 'Client,Team,Recipient', `filters are ${inbox.filters.join(', ')}`);
 note(inbox.searchWidth > 400, `search field is ${inbox.searchWidth}px wide`);
 note(!inbox.tabs.some((t) => /whatsapp/i.test(t)), 'no WhatsApp tab');
-note(inbox.stateTabs.join(',') === 'Needs reply,No reply needed', `state tabs are ${inbox.stateTabs.join(', ')}`);
+note(inbox.stateTabs.join(',') === 'Needs reply,No reply needed,All', `state tabs are ${inbox.stateTabs.join(', ')}`);
+// "All" is the union of the other two, never a third, larger set.
+const counts = await page.evaluate(() => Object.fromEntries(
+  [...document.querySelectorAll('.state-tabs .tab')].map((t) => [
+    t.textContent.replace(/\d+$/, '').trim(), Number(t.querySelector('.tab-n')?.textContent ?? 0)])));
+note(counts.All === counts['Needs reply'] + counts['No reply needed'],
+  `All (${counts.All}) is Needs reply (${counts['Needs reply']}) + No reply needed (${counts['No reply needed']})`);
+// Low confidence is Slack-only: on mail the rules-based classifier sets it so
+// widely that it narrows nothing.
+const mailChips = await page.evaluate(() => [...document.querySelectorAll('.chips button')].map((c) => c.textContent));
+note(!mailChips.some((c) => /low confidence/i.test(c)), 'no Low confidence chip on the mail tab');
 
 // The second tab must list its own items and its reason chips.
 await page.locator('.state-tabs .tab', { hasText: 'No reply needed' }).click();
@@ -160,12 +174,26 @@ for (const [label, nav] of [['clients', 'Clients'], ['teams', 'Teams'], ['settin
 }
 
 console.log('\nSettings tabs');
-for (const tab of ['Mailboxes & teams', 'Clients & domains', 'Matching rules']) {
+// Matching rules was removed from Settings; the rule engine still runs, it
+// just has no editor.
+for (const tab of ['Mailboxes & teams', 'Clients & domains', 'Slack channels']) {
   await page.click(`.tab:has-text("${tab}")`);
   await page.waitForTimeout(1500);
   const cards = await page.locator('.main .card').count();
   note(cards > 0, `${tab} renders (${cards} cards)`);
 }
+
+// Clients has its own search and filters now: the list runs past a hundred.
+await page.click('.nav-item:has-text("Clients")');
+await page.waitForTimeout(1800);
+const clientRows = await page.locator('tbody tr').count();
+await page.fill('input.toolbar-search', 'zzzz-no-such-client');
+await page.waitForTimeout(600);
+const narrowed = await page.locator('tbody tr').count();
+note(clientRows > 1 && narrowed < clientRows, `clients search narrows ${clientRows} to ${narrowed}`);
+await page.fill('input.toolbar-search', '');
+await page.waitForTimeout(500);
+note(await page.locator('.toolbar-filters .multiselect-trigger').count() >= 2, 'clients has service and manager filters');
 
 note(pageErrors.length === 0, `no console errors${pageErrors.length ? `: ${pageErrors.join(' ;; ')}` : ''}`);
 

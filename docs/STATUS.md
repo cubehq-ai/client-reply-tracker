@@ -458,3 +458,63 @@ already answered.
 - **No `ANTHROPIC_API_KEY`**, so the LLM window falls back to closing
   answered-looking groups with `low_confidence` set rather than asking a model
   which client message a reply answered.
+
+
+## Deploying to Railway (2026-10-20)
+
+Two services from this one repo. Both need the same environment.
+
+| Service | Start command | Replicas |
+|---|---|---|
+| `web` | `npm run migrate:prod && npm start` | any |
+| `worker` | `npm run start:worker` | **1 — do not scale** |
+
+`guarded()` stops a job overlapping *itself* inside one process. It cannot stop
+two processes, so a second worker replica doubles every Gmail and Slack sync
+and sends every digest twice. `railway.json` pins `numReplicas: 1`; keep it.
+
+Migrations run in the web service only — both racing is worse than the worker
+starting a few seconds before a new column exists.
+
+### Environment
+Everything in `.env.example`. The ones without which it will not work:
+`DATABASE_URL`, `GOOGLE_BACKEND=real`, `GOOGLE_SERVICE_ACCOUNT_FILE` (or the
+key's JSON mounted at that path), `SESSION_SECRET`, `ORG_DOMAINS`.
+Optional: `SLACK_USER_TOKEN` (empty disables Slack entirely),
+`ANTHROPIC_API_KEY`, `INTERNAL_MONGO_URL`, `DNS_FALLBACK_SERVERS`.
+
+Keep `SEND_ENABLED=false` and `SLACK_SEND_ENABLED=false` until you want the
+app to actually send and post.
+
+### Scheduled jobs
+All run in `Asia/Kolkata`, set explicitly, so a UTC container does not shift
+them. `npm run jobs-qa` runs every one of them once, for real, and prints what
+each did — use it after a deploy rather than waiting to see whether 04:00
+worked.
+
+| Job | Schedule | What it does |
+|---|---|---|
+| `sync` | every 10 min | Gmail history per watched mailbox — the primary ingest |
+| `slack-sync` | every 2 min | Slack history per watched channel |
+| `sweeps` | every 5 min | expired composer locks, overdue alerts |
+| `slack-window` | every 5 min | the ambiguous Slack groups, once a channel is quiet |
+| `hourly-status` | hourly at :05 | re-reads open threads, catching replies sent from mailboxes we do not watch |
+| `sync-clients` | hourly | clients and domains from the dashboard |
+| `slack-channels` | hourly at :17 | channel list and auto client mapping |
+| `discover` | 02:00 | mailbox discovery — skips unless `GOOGLE_ADMIN_SUBJECT` is set |
+| `renew-watches` | 03:00 | no-op until `PUBSUB_TOPIC` is set |
+| `reconcile` | 04:00 | full recompute; takes ~8 min at 900 items |
+| `purge-bodies` | 04:30 | retention, `BODY_RETENTION_DAYS` |
+| `slack-users` | 05:00 | Slack directory |
+| `digests` | 08:00 Mon–Fri | owner and manager digests |
+| `sync-teams` | 18:00 | teams and membership from the dashboard |
+
+### Known gaps at deploy time
+- **No Pub/Sub.** `PUBSUB_TOPIC` is unset, so mail arrives on the 10-minute
+  poll rather than in seconds. `renew-watches` no-ops until it is set.
+- **No `GOOGLE_ADMIN_SUBJECT`**, so `discover` skips. Mailboxes are managed in
+  Settings, which is why skipping is safe.
+- **No `ANTHROPIC_API_KEY`**, so the classifier is rules-only and the Slack
+  window keeps rule 3's guess with `low_confidence` set.
+- **`reconcile` takes ~8 minutes.** Fine at 04:00; worth watching as the
+  backlog grows.

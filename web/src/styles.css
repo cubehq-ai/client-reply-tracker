@@ -627,11 +627,15 @@ td:has(select), td:has(input), td:has(.btn), td:has(button) { text-align: left; 
 .slack-node { border-bottom: 1px solid var(--border); }
 .slack-node:last-child { border-bottom: none; }
 .slack-msg { padding: 8px 14px; border-left: 3px solid transparent; }
-.slack-msg.in-group { border-left-color: var(--accent); background: var(--accent-soft); }
+/* A message still waiting on us is the point of the row, so it is the thing
+   that stands out. */
+.slack-msg.pending { border-left-color: var(--danger); background: var(--panel); }
 .slack-msg.internal { background: var(--panel-2); }
-.slack-msg.internal.in-group { background: var(--accent-soft); }
 .slack-msg.deleted .slack-msg-body { text-decoration: line-through; opacity: .7; }
 .slack-msg-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; margin-bottom: 3px; }
+.slack-msg-head .btn.small { opacity: 0; transition: opacity .12s; }
+.slack-msg:hover .slack-msg-head .btn.small { opacity: 1; }
+.slack-composer select { max-width: 340px; }
 .slack-msg-body { font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 
 /* Thread replies, indented under their parent with a rail, the way Slack
@@ -655,3 +659,49 @@ td:has(select), td:has(input), td:has(.btn), td:has(button) { text-align: left; 
   border: 1px solid var(--border); background: var(--panel); color: var(--text);
   font: inherit; line-height: 1.45;
 }
+
+/* ---- waiting-time filter ---- */
+/* One control, not four loose pieces: a single bordered pill with internal
+   dividers. Every child is the full 34px so the toolbar row stays level --
+   nested controls at 28px and 24px read as ragged next to the multi-selects. */
+.wait-filter {
+  display: inline-flex; align-items: stretch; height: 34px;
+  border: 1px solid var(--border); border-radius: 7px;
+  background: var(--panel); overflow: hidden; font-size: 12.5px;
+}
+.wait-seg { display: inline-flex; align-items: center; height: 100%; }
+.wait-seg + .wait-seg { border-left: 1px solid var(--border); }
+
+.wait-dir { position: relative; }
+.wait-dir select {
+  appearance: none; -webkit-appearance: none;
+  height: 100%; border: none; background: transparent; color: var(--text);
+  font: inherit; font-size: 12.5px; padding: 0 22px 0 10px; cursor: pointer;
+}
+.wait-caret { position: absolute; right: 8px; color: var(--muted); pointer-events: none; }
+.wait-dir:hover { background: var(--panel-2); }
+
+.wait-hours { padding: 0 2px; }
+.wait-hours input {
+  width: 38px; height: 100%; text-align: center; font: inherit; font-size: 12.5px;
+  border: none; background: transparent; color: var(--text); padding: 0;
+}
+.wait-hours input::-webkit-outer-spin-button,
+.wait-hours input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.wait-hours input { -moz-appearance: textfield; appearance: textfield; }
+.wait-step {
+  width: 24px; height: 100%; border: none; background: transparent;
+  color: var(--muted); cursor: pointer; font: inherit; font-size: 14px; line-height: 1; padding: 0;
+}
+.wait-step:hover { color: var(--text); background: var(--panel-2); }
+.wait-unit { color: var(--muted); margin-right: 2px; }
+
+/* The count belongs to this filter, so it sits inside it. */
+.wait-count {
+  padding: 0 10px; background: var(--panel-2); color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A chip used as a toolbar filter has to match the controls beside it; the
+   chips row sets a smaller height that looks ragged in the toolbar. */
+.toolbar-filters .chip { height: 34px; border-radius: 7px; }

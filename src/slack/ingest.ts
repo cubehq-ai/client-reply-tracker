@@ -3,7 +3,8 @@ import { config } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { classifyMessage } from '../pipeline/classify.js';
 import { getSlackClient, slackConfigured } from './index.js';
-import { groupClientMessages, isAcknowledgement, resolveGroup, type StoredSlackMessage } from './groups.js';
+import { isAcknowledgement, type StoredSlackMessage } from './groups.js';
+import { ambiguousClosures, computePending } from './pending.js';
 import { ensureSlackUsers, slackIdentity } from './sync.js';
 import type { SlackMessage } from './types.js';
 
@@ -163,11 +164,11 @@ async function loadChannelMessages(channelId: string): Promise<StoredSlackMessag
 }
 
 /**
- * Turns a channel's stored messages into items, one per pending client group.
+ * Recomputes a channel's item from its stored messages.
  *
- * Runs over the whole channel rather than the new messages alone: a reply
- * arriving now can close a group from last week, and a group's standing is
- * only meaningful relative to everything after it.
+ * One item per channel: "who is waiting on us in #acme-cube" is the question
+ * people actually ask, and a row per message group answered half of it each
+ * time. Pendingness lives on the message; the item aggregates it.
  */
 export async function reconcileChannel(channelId: string): Promise<number> {
   const ch = await query<{ name: string; client_id: string | null }>(
@@ -177,162 +178,149 @@ export async function reconcileChannel(channelId: string): Promise<number> {
   if (!ch[0]) return 0;
 
   const messages = await loadChannelMessages(channelId);
-  const topLevel = messages.filter((m) => m.threadTs === null || m.threadTs === m.ts);
   const internal = await internalUserIds();
-  const groups = groupClientMessages(topLevel);
+  const result = computePending(messages, internal);
 
-  // Which groups are still open decides rule 4, so it is computed first over
-  // the deterministic rules only.
-  const provisional = groups.map((g) => {
-    const after = topLevel.filter((m) => m.isInternal && !m.deleted && Number(m.ts) > Number(g.groupTs));
-    const threadReplies = messages.filter((m) => m.threadTs === g.groupTs && m.ts !== g.groupTs);
-    return { group: g, after, threadReplies };
-  });
-
-  const settledReplied = new Set<string>();
-  for (const p of provisional) {
-    const r = resolveGroup({
-      group: p.group,
-      threadReplies: p.threadReplies,
-      internalUserIds: internal,
-      internalTopLevelAfter: p.after,
-      pendingGroupCount: 1, // first pass: thread replies and ticks only
-    });
-    if (r.replied && (r.reason === 'thread_reply' || r.reason === 'tick_reaction')) settledReplied.add(p.group.groupTs);
-  }
-
-  const pendingCount = provisional.filter((p) => !settledReplied.has(p.group.groupTs)).length;
-
-  let items = 0;
-  for (const p of provisional) {
-    const groupTs = p.group.groupTs;
-    const text = p.group.messages.map((m) => m.text).join('\n').trim();
-    const allDeleted = p.group.messages.every((m) => m.deleted);
-
-    let replied = settledReplied.has(groupTs);
-    let reason: string | null = replied ? 'replied' : null;
-    let lowConfidence = false;
-
-    if (!replied) {
-      const r = resolveGroup({
-        group: p.group,
-        threadReplies: p.threadReplies,
-        internalUserIds: internal,
-        internalTopLevelAfter: p.after,
-        pendingGroupCount: pendingCount,
-      });
-      if (r.replied) { replied = true; reason = 'replied'; }
-      else if (r.reason === null) {
-        // Ambiguous: several groups pending and one internal message after
-        // them. The LLM window decides, once the channel goes quiet.
-        lowConfidence = true;
-      }
-    }
-
-    let state = replied ? 'no_reply_needed' : 'needs_reply';
-    let summary = text.split('\n')[0]?.slice(0, 160) ?? '';
-
-    if (allDeleted) {
-      state = 'no_reply_needed';
-      reason = 'filtered';
-    } else if (!replied) {
-      // An acknowledgement needs no reply, and also means everything we were
-      // still waiting on in this channel has landed.
-      if (isAcknowledgement(text)) {
-        state = 'no_reply_needed';
-        reason = 'not_needed';
-      } else {
-        const verdict = await classifyMessage(`slack:${channelId}:${groupTs}`, {
-          subject: `#${ch[0].name}`,
-          body: text,
-          lastInternalBody: lastInternalBefore(topLevel, groupTs),
-        });
-        summary = verdict.summary || summary;
-        if (!verdict.needsReply) { state = 'no_reply_needed'; reason = 'not_needed'; }
-        if (verdict.confidence < config.classifier.threshold) lowConfidence = true;
-      }
-    }
-
-    const owner = await ownerForGroup(channelId, p.group.messages.map((m) => m.text).join('\n'));
-    await upsertSlackItem({
-      ownerUserId: owner.userId,
-      ownerSlackId: owner.slackUserId,
-      channelId,
-      channelName: ch[0].name,
-      clientId: ch[0].client_id == null ? null : Number(ch[0].client_id),
-      groupTs,
-      state,
-      reason,
-      lowConfidence,
-      summary,
-      lastExternalAt: p.group.messages[p.group.messages.length - 1]!.postedAt,
-      messageTs: p.group.messages.map((m) => m.ts),
-    });
-    items += 1;
-  }
-
-  await closeEarlierGroupsOnAcknowledgement(channelId, groups.map((g) => g.groupTs));
-  await closeDeletedGroups(channelId, groups.map((g) => g.groupTs));
-  return items;
-}
-
-/**
- * Grouping skips deleted messages, so a group whose every message was deleted
- * stops existing and its item would otherwise sit open forever. The client
- * withdrew the message; there is nothing left to answer.
- */
-async function closeDeletedGroups(channelId: string, liveGroupTs: string[]): Promise<void> {
-  await query(
-    `UPDATE items
-        SET state = 'no_reply_needed', reason = 'filtered', low_confidence = false, updated_at = now()
-      WHERE slack_channel_id = $1
-        AND NOT (slack_group_ts = ANY($2::text[]))
-        AND state = 'needs_reply'`,
-    [channelId, liveGroupTs],
-  );
-}
-
-function lastInternalBefore(topLevel: StoredSlackMessage[], groupTs: string): string | undefined {
-  const before = topLevel.filter((m) => m.isInternal && Number(m.ts) < Number(groupTs));
-  return before[before.length - 1]?.text;
-}
-
-/**
- * A client saying "thanks" closes what came before it: they would not be
- * thanking us if they were still waiting.
- */
-async function closeEarlierGroupsOnAcknowledgement(channelId: string, groupTsList: string[]): Promise<void> {
-  const acks = await query<{ slack_group_ts: string }>(
-    `SELECT slack_group_ts FROM items
-      WHERE slack_channel_id = $1 AND reason = 'not_needed' AND state = 'no_reply_needed'`,
-    [channelId],
-  );
-  for (const ack of acks) {
-    const earlier = groupTsList.filter((ts) => Number(ts) < Number(ack.slack_group_ts));
-    if (earlier.length === 0) continue;
+  // Persist pendingness per message, so the conversation view can mark the
+  // individual ones and a later pass can reopen exactly what the model says.
+  const pendingTs = result.verdicts.filter((v) => v.pending).map((v) => v.ts);
+  const settledTs = result.verdicts.filter((v) => !v.pending).map((v) => v.ts);
+  if (pendingTs.length > 0) {
+    // answered_at is the one thing the rules defer to: somebody looked at
+    // this and said it was handled, and a pass minutes later must not argue.
     await query(
-      `UPDATE items
-          SET state = 'no_reply_needed', reason = 'replied', updated_at = now()
-        WHERE slack_channel_id = $1 AND slack_group_ts = ANY($2::text[]) AND state = 'needs_reply'`,
-      [channelId, earlier],
+      `UPDATE slack_messages SET pending = true
+        WHERE channel_id = $1 AND ts = ANY($2::text[]) AND answered_at IS NULL`,
+      [channelId, pendingTs],
     );
   }
+  if (settledTs.length > 0) {
+    await query(
+      'UPDATE slack_messages SET pending = false WHERE channel_id = $1 AND ts = ANY($2::text[])',
+      [channelId, settledTs],
+    );
+  }
+
+  // One internal message credited with answering several questions is the
+  // case the model is asked about, once the channel goes quiet.
+  const ambiguous = ambiguousClosures(result).length > 0;
+
+  await writeChannelItem(channelId, ch[0].name, ch[0].client_id == null ? null : Number(ch[0].client_id), ambiguous);
+  return 1;
+}
+
+/** Everything the row needs, computed from the messages rather than guessed. */
+export async function writeChannelItem(
+  channelId: string,
+  channelName: string,
+  clientId: number | null,
+  lowConfidence: boolean,
+): Promise<void> {
+  const stats = await query<any>(
+    `SELECT
+       count(*) FILTER (WHERE pending) AS pending_count,
+       min(posted_at) FILTER (WHERE pending) AS oldest_pending_at,
+       min(ts) FILTER (WHERE pending) AS oldest_pending_ts,
+       max(posted_at) FILTER (WHERE NOT is_internal) AS last_client_at,
+       max(posted_at) FILTER (WHERE is_internal) AS last_internal_at,
+       max(posted_at) AS last_activity
+     FROM slack_messages WHERE channel_id = $1 AND NOT deleted`,
+    [channelId],
+  );
+  const s = stats[0] ?? {};
+  const pendingCount = Number(s.pending_count ?? 0);
+
+  const previewRow = await query<{ text: string }>(
+    `SELECT text FROM slack_messages
+      WHERE channel_id = $1 AND pending AND NOT deleted ORDER BY ts ASC LIMIT 1`,
+    [channelId],
+  );
+  const preview = previewRow[0]?.text?.slice(0, 200) ?? null;
+
+  // A channel with nothing pending is answered. "not_needed" is the honest
+  // reason when the last thing the client said asked nothing of us.
+  const state = pendingCount > 0 ? 'needs_reply' : 'no_reply_needed';
+  const reason = pendingCount > 0 ? null : await closedReason(channelId);
+
+  const owner = await ownerForChannel(channelId, preview ?? '');
+
+  await tx(async (c) => {
+    const globalKey = `slack:${channelId}`;
+    const conv = await c.query<{ id: string }>(
+      `INSERT INTO conversations (global_key, subject, client_id, first_external_at, last_external_at, updated_at)
+       VALUES ($1,$2,$3,$4,$4, now())
+       ON CONFLICT (global_key) DO UPDATE SET
+         subject = EXCLUDED.subject, client_id = EXCLUDED.client_id,
+         last_external_at = EXCLUDED.last_external_at, updated_at = now()
+       RETURNING id`,
+      [globalKey, `#${channelName}`, clientId, s.last_client_at ?? s.last_activity ?? new Date()],
+    );
+    const conversationId = Number(conv.rows[0]!.id);
+
+    await c.query(
+      `INSERT INTO items (conversation_id, source, state, reason, client_id, low_confidence,
+                          summary, preview, pending_count, oldest_pending_at, oldest_pending_ts,
+                          last_client_message_at, last_internal_message_at, last_external_at,
+                          slack_channel_id, owner_user_id, slack_owner_id, updated_at)
+       VALUES ($1,'slack',$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now())
+       ON CONFLICT (conversation_id) DO UPDATE SET
+         -- A person's call stands until the channel itself changes.
+         state = CASE WHEN items.reason = 'ignored' AND $2 = 'needs_reply' AND items.pending_count = $7
+                      THEN items.state ELSE EXCLUDED.state END,
+         reason = CASE WHEN items.reason = 'ignored' AND $2 = 'needs_reply' AND items.pending_count = $7
+                       THEN items.reason ELSE EXCLUDED.reason END,
+         client_id = EXCLUDED.client_id,
+         low_confidence = EXCLUDED.low_confidence,
+         summary = EXCLUDED.summary,
+         preview = EXCLUDED.preview,
+         pending_count = EXCLUDED.pending_count,
+         oldest_pending_at = EXCLUDED.oldest_pending_at,
+         oldest_pending_ts = EXCLUDED.oldest_pending_ts,
+         last_client_message_at = EXCLUDED.last_client_message_at,
+         last_internal_message_at = EXCLUDED.last_internal_message_at,
+         last_external_at = EXCLUDED.last_external_at,
+         owner_user_id = COALESCE(items.owner_user_id, EXCLUDED.owner_user_id),
+         slack_owner_id = COALESCE(items.slack_owner_id, EXCLUDED.slack_owner_id),
+         updated_at = now()`,
+      [
+        conversationId, state, reason, clientId, lowConfidence,
+        preview, pendingCount, s.oldest_pending_at, s.oldest_pending_ts,
+        s.last_client_at, s.last_internal_at,
+        s.oldest_pending_at ?? s.last_client_at ?? s.last_activity,
+        channelId, owner.userId, owner.slackUserId,
+      ],
+    );
+  });
 }
 
 /**
- * Who a client's message is addressed to.
- *
- * A channel has no mailbox, so nothing set an owner and every Slack row read
- * "owner: unowned". The message itself usually says: people open with
- * "Hi @Shireen @Sahana". Those mentions, narrowed to our own people and
- * matched to a user by email, are the owner. Failing that, whoever from our
- * side last spoke in the channel is the one carrying it.
+ * Why a channel with nothing pending is closed: because the last thing the
+ * client said needed no answer, or because we answered.
  */
-async function ownerForGroup(
+async function closedReason(channelId: string): Promise<string> {
+  const last = await query<{ text: string }>(
+    `SELECT text FROM slack_messages
+      WHERE channel_id = $1 AND NOT is_internal AND NOT deleted ORDER BY ts DESC LIMIT 1`,
+    [channelId],
+  );
+  if (last[0] && isAcknowledgement(last[0].text)) return 'not_needed';
+  return 'replied';
+}
+
+/**
+ * Who the channel's work sits with.
+ *
+ * Usually the person the client addressed in the oldest thing still waiting;
+ * failing that, whoever from our side last spoke there. owner_user_id is set
+ * only when that person has a ReplyQueue account -- most of the workspace
+ * does not -- while the Slack identity is recorded either way, so the row
+ * names somebody instead of reading "unowned".
+ */
+async function ownerForChannel(
   channelId: string,
-  groupText: string,
+  text: string,
 ): Promise<{ slackUserId: string | null; userId: number | null }> {
-  const mentioned = [...groupText.matchAll(/<@([A-Z0-9_]+)(?:\|[^>]*)?>/g)].map((m) => m[1]!);
+  const mentioned = [...text.matchAll(/<@([A-Z0-9_]+)(?:\|[^>]*)?>/g)].map((m) => m[1]!);
 
   let slackUserId: string | null = null;
   if (mentioned.length > 0) {
@@ -344,7 +332,6 @@ async function ownerForGroup(
     );
     slackUserId = rows[0]?.id ?? null;
   }
-
   if (slackUserId == null) {
     const lastInternal = await query<{ user_id: string }>(
       `SELECT m.user_id FROM slack_messages m
@@ -357,9 +344,6 @@ async function ownerForGroup(
   }
   if (slackUserId == null) return { slackUserId: null, userId: null };
 
-  // Link to a ReplyQueue account when that person has one, so the visibility
-  // rules and the owner filter keep working; the Slack identity stands either
-  // way, because most of the workspace has no account here.
   const linked = await query<{ id: string }>(
     `SELECT u.id FROM slack_users su
        JOIN users u ON lower(u.email) = lower(su.email::text)
@@ -367,74 +351,4 @@ async function ownerForGroup(
     [slackUserId],
   );
   return { slackUserId, userId: linked[0] ? Number(linked[0].id) : null };
-}
-
-interface UpsertInput {
-  channelId: string;
-  channelName: string;
-  clientId: number | null;
-  groupTs: string;
-  state: string;
-  reason: string | null;
-  lowConfidence: boolean;
-  summary: string;
-  lastExternalAt: Date;
-  messageTs: string[];
-  ownerUserId: number | null;
-  ownerSlackId: string | null;
-}
-
-/**
- * One conversation and one item per client group.
- *
- * A user's own decision outranks a recomputation: an item someone ignored or
- * marked as needing no reply is not reopened by a later pass unless a client
- * message actually arrives in its group.
- */
-async function upsertSlackItem(input: UpsertInput): Promise<void> {
-  await tx(async (c) => {
-    const globalKey = `slack:${input.channelId}:${input.groupTs}`;
-    const conv = await c.query<{ id: string }>(
-      `INSERT INTO conversations (global_key, subject, client_id, first_external_at, last_external_at, updated_at)
-       VALUES ($1,$2,$3,$4,$4, now())
-       ON CONFLICT (global_key) DO UPDATE SET
-         subject = EXCLUDED.subject, client_id = EXCLUDED.client_id,
-         last_external_at = EXCLUDED.last_external_at, updated_at = now()
-       RETURNING id`,
-      [globalKey, `#${input.channelName}`, input.clientId, input.lastExternalAt],
-    );
-    const conversationId = Number(conv.rows[0]!.id);
-
-    await c.query(
-      `INSERT INTO items (conversation_id, source, state, reason, client_id, low_confidence,
-                          summary, last_external_at, slack_channel_id, slack_group_ts,
-                          owner_user_id, slack_owner_id, updated_at)
-       VALUES ($1,'slack',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
-       ON CONFLICT (conversation_id) DO UPDATE SET
-         -- A person's call stands: only 'replied' and 'filtered', which are
-         -- facts about the channel rather than judgements, may overwrite it.
-         state = CASE WHEN items.reason IN ('ignored','not_needed') AND $3 NOT IN ('replied','filtered')
-                      THEN items.state ELSE EXCLUDED.state END,
-         reason = CASE WHEN items.reason IN ('ignored','not_needed') AND $3 NOT IN ('replied','filtered')
-                       THEN items.reason ELSE EXCLUDED.reason END,
-         client_id = EXCLUDED.client_id,
-         low_confidence = EXCLUDED.low_confidence,
-         summary = COALESCE(NULLIF(EXCLUDED.summary, ''), items.summary),
-         last_external_at = EXCLUDED.last_external_at,
-         -- Never clear an owner a person assigned by hand.
-         owner_user_id = COALESCE(items.owner_user_id, EXCLUDED.owner_user_id),
-         slack_owner_id = COALESCE(items.slack_owner_id, EXCLUDED.slack_owner_id),
-         updated_at = now()`,
-      [
-        conversationId, input.state, input.reason, input.clientId, input.lowConfidence,
-        input.summary, input.lastExternalAt, input.channelId, input.groupTs,
-        input.ownerUserId, input.ownerSlackId,
-      ],
-    );
-
-    await c.query(
-      'UPDATE slack_messages SET conversation_id = $1 WHERE channel_id = $2 AND ts = ANY($3::text[])',
-      [conversationId, input.channelId, input.messageTs],
-    );
-  });
 }

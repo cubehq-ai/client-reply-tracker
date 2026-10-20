@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, timeAgo, type SlackThread as SlackThreadView } from './api';
 import { renderEmoji, reactionLabel } from './emoji';
 import { useDrawerWidth } from './useDrawerWidth';
@@ -45,9 +45,8 @@ export function SlackThread({ itemId, onClose, onChanged }: {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [reply, setReply] = useState('');
-  const [composing, setComposing] = useState(false);
   const { width, startResize } = useDrawerWidth();
+  const logRef = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(() => {
     api.slackThread(itemId).then(setThread).catch((e) => setError(e.message));
@@ -56,22 +55,30 @@ export function SlackThread({ itemId, onClose, onChanged }: {
 
   const tree = useMemo(() => (thread ? buildTree(thread.messages) : []), [thread]);
 
+  // Open at the newest message, the way Slack itself does: the bottom of a
+  // channel is where the conversation is, and starting at the top meant
+  // scrolling past weeks of history to reach it.
+  //
+  // Once only, per channel. Marking a message answered reloads the thread,
+  // and yanking the view back to the bottom would throw out the place of
+  // anyone working through the history from the top.
+  const landedAt = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = logRef.current;
+    if (!el || tree.length === 0 || landedAt.current === itemId) return;
+    el.scrollTop = el.scrollHeight;
+    landedAt.current = itemId;
+  }, [tree, itemId]);
+
+  const markAnswered = async (ts: string): Promise<void> => {
+    await act(async () => { await api.slackAnswered(itemId, ts); load(); }, 'Marked answered');
+  };
+
   const act = async (fn: () => Promise<unknown>, message: string): Promise<void> => {
     setBusy(true);
     try { await fn(); setNotice(message); onChanged(); }
     catch (e: any) { setError(e.message); }
     finally { setBusy(false); }
-  };
-
-  const send = async (): Promise<void> => {
-    if (!reply.trim()) return;
-    await act(async () => {
-      const r = await api.slackReply(itemId, reply);
-      setReply('');
-      setComposing(false);
-      setNotice(r.dryRun ? 'Dry run — the message was logged, not posted' : 'Posted to the thread');
-      load();
-    }, 'Sent');
   };
 
   return (
@@ -85,8 +92,8 @@ export function SlackThread({ itemId, onClose, onChanged }: {
             <div style={{ minWidth: 0 }}>
               <h1 style={{ fontSize: 16 }}>#{thread?.channelName ?? 'Loading…'}</h1>
               <div className="muted" style={{ fontSize: 12.5 }}>
-                Slack
-                {thread && ` · ${thread.messages.length} message${thread.messages.length === 1 ? '' : 's'}`}
+                {thread?.clientName ?? 'Unmatched'}
+                {thread && ` · ${thread.pendingCount} waiting`}
                 {thread?.permalink && (
                   <> · <a href={thread.permalink} target="_blank" rel="noopener noreferrer">Open in Slack</a></>
                 )}
@@ -99,17 +106,17 @@ export function SlackThread({ itemId, onClose, onChanged }: {
         {notice && <div className="banner ok">{notice}</div>}
         {error && <div className="banner err">{error}</div>}
 
-        <div className="slack-log">
+        <div className="slack-log" ref={logRef}>
           {thread == null && !error && <div className="empty">Loading…</div>}
           {tree.map((node) => (
             <div key={node.message.ts} className="slack-node">
-              <SlackMessage m={node.message} />
+              <SlackMessage m={node.message} onAnswered={markAnswered} />
               {node.replies.length > 0 && (
                 <div className="slack-replies">
                   <div className="slack-replies-label">
                     {node.replies.length} repl{node.replies.length === 1 ? 'y' : 'ies'} in thread
                   </div>
-                  {node.replies.map((r) => <SlackMessage key={r.ts} m={r} reply />)}
+                  {node.replies.map((r) => <SlackMessage key={r.ts} m={r} reply onAnswered={markAnswered} />)}
                 </div>
               )}
             </div>
@@ -117,29 +124,23 @@ export function SlackThread({ itemId, onClose, onChanged }: {
         </div>
 
         <div className="drawer-actions">
-          {composing ? (
-            <div className="slack-composer">
-              <textarea
-                value={reply}
-                autoFocus
-                rows={4}
-                placeholder="Reply in thread…"
-                onChange={(e) => setReply(e.target.value)}
-              />
-              <div className="muted" style={{ fontSize: 12 }}>
-                Posts as a thread reply{thread?.postingAs ? ` — as ${thread.postingAs}` : ''}
-              </div>
-              <div className="row-actions">
-                <button className="btn primary" disabled={busy || !reply.trim()} onClick={send}>Send</button>
-                <button className="btn" disabled={busy} onClick={() => setComposing(false)}>Cancel</button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <button className="btn primary" onClick={() => setComposing(true)}>Reply</button>
-              <button className="btn" disabled={busy} onClick={() => act(() => api.act(itemId, 'ignore', { reason: 'not_needed', scope: 'message' }), 'Ignored')}>Ignore</button>
-              <button className="btn" disabled={busy} onClick={() => act(() => api.act(itemId, 'no-reply-needed'), 'Marked as no reply needed')}>No reply needed</button>
-            </>
+          {/* No composer here: replies are written in Slack, where the
+              threading, formatting and files are. This panel is for seeing
+              what is unanswered and recording that it has been dealt with. */}
+          {(thread?.pendingCount ?? 0) > 0 && (
+            <button
+              className="btn primary"
+              disabled={busy}
+              title="Clear everything waiting in this channel"
+              onClick={() => act(async () => { await api.slackMarkRead(itemId); load(); }, 'Marked as read')}
+            >
+              Mark channel as read
+            </button>
+          )}
+          {thread?.permalink && (
+            <a className="btn" href={thread.permalink} target="_blank" rel="noopener noreferrer">
+              Open in Slack
+            </a>
           )}
         </div>
       </aside>
@@ -147,15 +148,22 @@ export function SlackThread({ itemId, onClose, onChanged }: {
   );
 }
 
-function SlackMessage({ m, reply = false }: { m: Msg; reply?: boolean }) {
+function SlackMessage({ m, reply = false, onAnswered }: {
+  m: Msg; reply?: boolean; onAnswered: (ts: string) => void;
+}) {
   return (
     <div
-      className={`slack-msg ${m.isInternal ? 'internal' : 'external'} ${m.inGroup ? 'in-group' : ''} ${m.deleted ? 'deleted' : ''} ${reply ? 'is-reply' : ''}`}
+      className={`slack-msg ${m.isInternal ? 'internal' : 'external'} ${m.pending ? 'pending' : ''} ${m.deleted ? 'deleted' : ''} ${reply ? 'is-reply' : ''}`}
     >
       <div className="slack-msg-head">
         <strong>{m.author}</strong>
         <span className={`tag ${m.isInternal ? '' : 'client'}`}>{m.isInternal ? 'us' : 'client'}</span>
         <span className="muted">{timeAgo(m.at)}</span>
+        {m.pending && (
+          <button className="btn small" style={{ marginLeft: 'auto' }} onClick={() => onAnswered(m.ts)}>
+            Mark answered
+          </button>
+        )}
       </div>
       <div className="slack-msg-body">
         {m.deleted ? <em className="muted">deleted</em> : renderEmoji(m.text)}

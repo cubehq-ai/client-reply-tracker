@@ -19,7 +19,7 @@ beforeEach(async () => {
 describe('multi-select filters', () => {
   it('an empty list means no restriction', async () => {
     const all = await listQueue(admin, 'needs_reply', {});
-    const empty = await listQueue(admin, 'needs_reply', { reasons: [], clientIds: [], ages: [] });
+    const empty = await listQueue(admin, 'needs_reply', { reasons: [], clientIds: [] });
     expect(empty.total).toBe(all.total);
   });
 
@@ -37,13 +37,6 @@ describe('multi-select filters', () => {
     const b = await listQueue(admin, 'needs_reply', { clientIds: [Number(clients[1]!.id)] });
     const both = await listQueue(admin, 'needs_reply', { clientIds: [Number(clients[0]!.id), Number(clients[1]!.id)] });
     expect(both.total).toBe(a.total + b.total);
-  });
-
-  it('age buckets OR together and partition the set', async () => {
-    const buckets = ['4h', '24h', '3d', 'older'] as const;
-    const parts = await Promise.all(buckets.map((b) => listQueue(admin, 'needs_reply', { ages: [b] })));
-    const all = await listQueue(admin, 'needs_reply', { ages: [...buckets] });
-    expect(all.total).toBe(parts.reduce((n, p) => n + p.total, 0));
   });
 
   it('different filters still AND with each other', async () => {
