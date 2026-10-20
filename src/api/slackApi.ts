@@ -4,6 +4,7 @@ import { getSlackClient } from '../slack/index.js';
 import { slackIdentity } from '../slack/sync.js';
 import { reconcileChannel, syncOneChannel } from '../slack/ingest.js';
 import { invalidateOrgContext } from '../pipeline/context.js';
+import { renderSlackText } from '../slack/text.js';
 import type { SessionUser } from './auth.js';
 import { HttpError } from './auth.js';
 import { audit } from './actions.js';
@@ -153,6 +154,10 @@ export async function getSlackThread(itemId: number): Promise<SlackThreadView> {
   );
   const inGroup = new Set(groupIds.map((g) => g.ts));
 
+  // Mentions are ids on the wire; without the names the text is unreadable.
+  const nameRows = await query<{ id: string; name: string }>('SELECT id, name FROM slack_users');
+  const names = new Map(nameRows.map((r) => [r.id, r.name]));
+
   let permalink: string | null = null;
   if (slackEnabled()) permalink = await getSlackClient().permalink(channelId, groupTs);
 
@@ -172,7 +177,7 @@ export async function getSlackThread(itemId: number): Promise<SlackThreadView> {
       author: r.author ?? 'unknown',
       authorId: r.user_id,
       isInternal: r.is_internal,
-      text: r.text,
+      text: renderSlackText(r.text, names),
       at: new Date(r.posted_at).toISOString(),
       threadOf: r.thread_ts && r.thread_ts !== r.ts ? r.thread_ts : null,
       inGroup: inGroup.has(r.ts),

@@ -1,4 +1,5 @@
 import { query } from '../db/pool.js';
+import { renderSlackText } from '../slack/text.js';
 import { config } from '../lib/config.js';
 import type { SessionUser } from './auth.js';
 
@@ -229,6 +230,16 @@ export async function listQueue(
   const rows = await query<any>(sql, params);
   const total = rows[0] ? Number(rows[0].total_count) : 0;
 
+  // Slack rows carry wire markup; resolve it once per page rather than per row.
+  const names = new Map<string, string>();
+  if (rows.some((r) => r.source === 'slack')) {
+    for (const u of await query<{ id: string; name: string }>('SELECT id, name FROM slack_users')) {
+      names.set(u.id, u.name);
+    }
+  }
+  const render = (text: string | null): string | null =>
+    text == null ? null : renderSlackText(text, names);
+
   return {
     total,
     items: rows.map((r) => ({
@@ -239,7 +250,7 @@ export async function listQueue(
       clientId: r.client_id ? Number(r.client_id) : null,
       clientName: r.client_name,
       ownerEmail: r.owner_email,
-      summary: r.summary,
+      summary: r.source === 'slack' ? render(r.summary) : r.summary,
       reason: r.reason,
       confidence: r.needs_reply_confidence === null ? null : Number(r.needs_reply_confidence),
       lowConfidence: Boolean(r.low_confidence),
@@ -254,7 +265,7 @@ export async function listQueue(
       // play those roles so one row component renders both sources.
       fromEmail: r.from_email ?? r.slack_author ?? null,
       fromName: r.slack_author ?? null,
-      snippet: r.snippet ?? (r.slack_text ? String(r.slack_text).split('\n')[0]?.slice(0, 200) : null),
+      snippet: r.snippet ?? (r.slack_text ? render(String(r.slack_text))!.split('\n')[0]?.slice(0, 200) : null),
       source: r.source ?? 'gmail',
       slackChannelId: r.slack_channel_id ?? null,
       slackChannelName: r.slack_channel_name ?? null,

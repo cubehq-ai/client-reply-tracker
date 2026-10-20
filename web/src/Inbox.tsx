@@ -258,7 +258,11 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
               <span>{it.source === 'slack' ? (it.fromName ?? it.fromEmail) : it.fromEmail}</span>
               <span>owner: {it.ownerEmail ?? 'unowned'}</span>
 
-              {it.summary && <span style={{ flexBasis: '100%' }}>{it.summary}</span>}
+              {(it.source === 'slack' ? (it.snippet ?? it.summary) : it.summary) && (
+                <span style={{ flexBasis: '100%' }}>
+                  {it.source === 'slack' ? (it.snippet ?? it.summary) : it.summary}
+                </span>
+              )}
             </div>
           </div>
         ))}

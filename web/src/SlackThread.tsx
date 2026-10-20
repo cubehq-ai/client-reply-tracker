@@ -63,16 +63,20 @@ export function SlackThread({ itemId, onClose, onChanged }: {
   return (
     <div className="drawer">
       <div className="drawer-head">
-        <div>
-          <h2 style={{ margin: 0 }}>#{thread.channelName}</h2>
-          <div className="subtitle" style={{ marginBottom: 0 }}>
-            Slack
-            {thread.permalink && (
-              <> · <a href={thread.permalink} target="_blank" rel="noopener noreferrer">Open in Slack</a></>
-            )}
+        {/* .drawer-head is a plain block, so the head lays itself out, the
+            same way the mail drawer does. */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+          <div style={{ minWidth: 0 }}>
+            <h1 style={{ fontSize: 16 }}>#{thread.channelName}</h1>
+            <div className="muted" style={{ fontSize: 12.5 }}>
+              Slack · {thread.messages.length} message{thread.messages.length === 1 ? '' : 's'}
+              {thread.permalink && (
+                <> · <a href={thread.permalink} target="_blank" rel="noopener noreferrer">Open in Slack</a></>
+              )}
+            </div>
           </div>
+          <button className="btn" onClick={onClose}>Close</button>
         </div>
-        <button className="btn" onClick={onClose}>Close</button>
       </div>
 
       {notice && <div className="banner ok">{notice}</div>}
