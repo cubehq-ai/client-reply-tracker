@@ -3,8 +3,8 @@ import { config } from '../lib/config.js';
 import { getSlackClient, slackConfigured } from '../slack/index.js';
 import { slackIdentity } from '../slack/sync.js';
 import { reconcileChannel, syncOneChannel, writeChannelItem } from '../slack/ingest.js';
+import { purgeSlackMessages } from '../slack/retention.js';
 import { invalidateOrgContext } from '../pipeline/context.js';
-import { renderSlackText } from '../slack/text.js';
 import type { SessionUser } from './auth.js';
 import { HttpError } from './auth.js';
 import { audit } from './actions.js';
@@ -22,9 +22,12 @@ export async function slackStatus(): Promise<SlackStatus> {
   if (!slackConfigured()) {
     return { connected: false, sendEnabled: false, postingAs: null, watchedChannels: 0, unmappedChannels: 0 };
   }
+  // Unmapped means "watched, and we cannot name the client" -- the rows a
+  // person could act on. Counting every channel without a client folded in
+  // 23 alert feeds nobody will ever map and made the number meaningless.
   const counts = await query<{ watched: string; unmapped: string }>(
     `SELECT count(*) FILTER (WHERE watched) AS watched,
-            count(*) FILTER (WHERE client_id IS NULL) AS unmapped
+            count(*) FILTER (WHERE watched AND client_id IS NULL) AS unmapped
        FROM slack_channels WHERE NOT is_archived`,
   );
   let postingAs: SlackStatus['postingAs'] = null;
@@ -48,12 +51,15 @@ export async function slackStatus(): Promise<SlackStatus> {
 export async function listSlackChannels(): Promise<any[]> {
   return query(
     `SELECT sc.id, sc.name, sc.is_private, sc.is_shared, sc.watched, sc.mapping_source,
+            sc.watch_source, sc.mapping_basis, sc.member_count, sc.external_member_count,
             sc.client_id, cl.name AS client_name, sc.last_synced_ts, sc.last_message_at,
+            sc.messages_purged,
+            (SELECT count(*) FROM slack_messages m WHERE m.channel_id = sc.id) AS stored_messages,
             (SELECT count(*) FROM items i WHERE i.slack_channel_id = sc.id AND i.state = 'needs_reply') AS open_items
        FROM slack_channels sc
        LEFT JOIN clients cl ON cl.id = sc.client_id
       WHERE NOT sc.is_archived
-      ORDER BY sc.watched DESC, sc.name ASC`,
+      ORDER BY sc.watched DESC, sc.external_member_count DESC, sc.name ASC`,
   );
 }
 
@@ -80,7 +86,13 @@ export async function updateSlackChannel(
     );
   }
   if (patch.watched !== undefined) {
-    await query('UPDATE slack_channels SET watched = $2, updated_at = now() WHERE id = $1', [channelId, patch.watched]);
+    // watch_source = 'manual' is what stops the hourly channel sync from
+    // putting its own answer back: the auto rule watches anything with an
+    // external member, and without this a deliberate unwatch lasted an hour.
+    await query(
+      `UPDATE slack_channels SET watched = $2, watch_source = 'manual', updated_at = now() WHERE id = $1`,
+      [channelId, patch.watched],
+    );
   }
   invalidateOrgContext();
 
@@ -93,6 +105,11 @@ export async function updateSlackChannel(
     return { ok: true, backfilled: true };
   }
   if (row[0].watched) await reconcileChannel(channelId);
+  // Unwatching is also a retention decision: the messages of a channel that
+  // is not client work are pure storage, and leaving them until 04:40 the
+  // next morning means an accidental watch of #connector-statuses keeps its
+  // sixteen thousand rows all day.
+  if (!row[0].watched) await purgeSlackMessages();
   return { ok: true, backfilled: false };
 }
 
@@ -104,16 +121,29 @@ export interface SlackThreadView {
   postingAs: string | null;
   pendingCount: number;
   oldestPendingTs: string | null;
+  /** When the retention sweep has removed older messages, so the view can
+   *  say why it starts where it does instead of looking truncated. */
+  purgedThroughTs: string | null;
+  retentionDays: number;
+  /** Everyone named in the window, for rendering mentions. Slack sends ids. */
+  users: Record<string, { name: string; isInternal: boolean }>;
   messages: {
     ts: string;
     author: string;
     authorId: string | null;
     isInternal: boolean;
+    /**
+     * Slack's own mrkdwn, unresolved. The ids stay in it and the browser
+     * renders them against `users`: resolving here would flatten a mention
+     * to text and lose which side of the channel the person is on, which is
+     * the one thing a reader of these channels needs to see.
+     */
     text: string;
     at: string;
     threadOf: string | null;
     pending: boolean;
     deleted: boolean;
+    edited: boolean;
     reactions: Record<string, string[]>;
   }[];
 }
@@ -125,7 +155,8 @@ export interface SlackThreadView {
  */
 export async function getSlackThread(itemId: number): Promise<SlackThreadView> {
   const item = await query<any>(
-    `SELECT i.slack_channel_id, i.pending_count, i.oldest_pending_ts, sc.name, cl.name AS client_name
+    `SELECT i.slack_channel_id, i.pending_count, i.oldest_pending_ts, sc.name,
+            sc.purged_through_ts, cl.name AS client_name
        FROM items i
        JOIN slack_channels sc ON sc.id = i.slack_channel_id
        LEFT JOIN clients cl ON cl.id = i.client_id
@@ -147,8 +178,11 @@ export async function getSlackThread(itemId: number): Promise<SlackThreadView> {
     [channelId],
   );
 
-  const nameRows = await query<{ id: string; name: string }>('SELECT id, name FROM slack_users');
-  const names = new Map(nameRows.map((r) => [r.id, r.name]));
+  const nameRows = await query<{ id: string; name: string; is_internal: boolean }>(
+    'SELECT id, name, is_internal FROM slack_users',
+  );
+  const users: SlackThreadView['users'] = {};
+  for (const r of nameRows) users[r.id] = { name: r.name, isInternal: r.is_internal };
 
   let permalink: string | null = null;
   if (slackConfigured()) permalink = await getSlackClient().permalink(channelId, item[0].oldest_pending_ts ?? rows[rows.length - 1]?.ts ?? '');
@@ -164,16 +198,20 @@ export async function getSlackThread(itemId: number): Promise<SlackThreadView> {
     postingAs,
     pendingCount: Number(item[0].pending_count ?? 0),
     oldestPendingTs: item[0].oldest_pending_ts ?? null,
+    purgedThroughTs: item[0].purged_through_ts ?? null,
+    retentionDays: config.slack.retentionDays,
+    users,
     messages: rows.map((r) => ({
       ts: r.ts,
       author: r.author ?? 'unknown',
       authorId: r.user_id,
       isInternal: r.is_internal,
-      text: renderSlackText(r.text, names),
+      text: r.text,
       at: new Date(r.posted_at).toISOString(),
       threadOf: r.thread_ts && r.thread_ts !== r.ts ? r.thread_ts : null,
       pending: Boolean(r.pending),
       deleted: r.deleted,
+      edited: Boolean(r.edited),
       reactions: r.reactions ?? {},
     })),
   };

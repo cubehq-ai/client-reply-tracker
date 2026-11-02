@@ -3,8 +3,9 @@ import { config } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { classifyMessage } from '../pipeline/classify.js';
 import { getSlackClient, slackConfigured } from './index.js';
-import { isAcknowledgement, type StoredSlackMessage } from './groups.js';
-import { ambiguousClosures, computePending } from './pending.js';
+import { isAcknowledgement, mentionsIn, type StoredSlackMessage } from './groups.js';
+import { renderSlackText } from './text.js';
+import { ambiguousClosures, computePending, type PendingResult } from './pending.js';
 import { ensureSlackUsers, slackIdentity } from './sync.js';
 import type { SlackMessage } from './types.js';
 
@@ -58,9 +59,19 @@ export async function syncOneChannel(
 ): Promise<ChannelSyncStats> {
   const client = getSlackClient();
 
-  // First pass reads the backfill window; later passes read only what is new.
-  const oldest = lastSyncedTs
-    ?? (backfilled ? null : String((Date.now() - config.org.backfillDays * 86_400_000) / 1000));
+  /**
+   * How far back to read. The backfill window, until there is a watermark.
+   *
+   * It used to fall through to `null` -- no lower bound at all -- once
+   * `backfilled_at` was set. A channel with nothing in the last 30 days
+   * stores no message on its first pass, so it gets `backfilled_at` and no
+   * `last_synced_ts`, and the *second* pass asked Slack for the channel's
+   * entire history: dormant #balancegrille-cube went from 0 messages to
+   * 4,754, every one of them years old. The window is the bound, always.
+   */
+  const windowFloor = String((Date.now() - config.org.backfillDays * 86_400_000) / 1000);
+  const oldest = lastSyncedTs ?? windowFloor;
+  void backfilled;
 
   const top: SlackMessage[] = [];
   let cursor: string | null = null;
@@ -106,8 +117,17 @@ export async function syncOneChannel(
         WHERE id = $1`,
       [channelId, newest, tsToDate(newest)],
     );
-  } else if (!backfilled) {
-    await query('UPDATE slack_channels SET backfilled_at = now(), updated_at = now() WHERE id = $1', [channelId]);
+  } else {
+    // Nothing in the window. Record the floor as the watermark so the next
+    // pass resumes from it instead of re-reading the same empty 30 days
+    // every two minutes.
+    await query(
+      `UPDATE slack_channels
+          SET last_synced_ts = COALESCE(last_synced_ts, $2),
+              backfilled_at = COALESCE(backfilled_at, now()), updated_at = now()
+        WHERE id = $1`,
+      [channelId, windowFloor],
+    );
   }
 
   return { channel: channelName, fetched: all.length, stored, items };
@@ -117,7 +137,17 @@ export async function syncOneChannel(
 async function storeMessages(channelId: string, messages: SlackMessage[]): Promise<number> {
   // An author from the client's workspace is not in users.list, and without
   // their row every message of theirs would be filed as internal.
-  await ensureSlackUsers([...new Set(messages.map((m) => m.userId).filter((id): id is string => id != null))]);
+  //
+  // Mentioned ids too, not just authors: whether "<@U019HNTQC8J> can we do
+  // anything about this" is the client asking us or asking each other turns
+  // entirely on which side U019HNTQC8J is, and an unknown id is read -- it
+  // has to be -- as possibly ours, so the message stays on the queue.
+  const seen = new Set<string>();
+  for (const m of messages) {
+    if (m.userId != null) seen.add(m.userId);
+    for (const id of mentionsIn(m.text)) seen.add(id);
+  }
+  await ensureSlackUsers([...seen]);
   const internal = await internalUserIds();
   let stored = 0;
 
@@ -145,9 +175,22 @@ async function internalUserIds(): Promise<Set<string>> {
   return new Set(rows.map((r) => r.id));
 }
 
+/** The people we know are on the client's side of a channel. */
+export async function externalUserIds(channelId: string): Promise<Set<string>> {
+  const rows = await query<{ id: string }>(
+    `SELECT DISTINCT su.id FROM slack_users su
+      WHERE NOT su.is_internal AND NOT su.is_bot
+        AND (su.id IN (SELECT user_id FROM slack_messages WHERE channel_id = $1 AND user_id IS NOT NULL)
+             OR su.id IN (SELECT unnest(regexp_matches(text, '<@([A-Z0-9_]+)', 'g'))
+                            FROM slack_messages WHERE channel_id = $1))`,
+    [channelId],
+  );
+  return new Set(rows.map((r) => r.id));
+}
+
 async function loadChannelMessages(channelId: string): Promise<StoredSlackMessage[]> {
   const rows = await query<any>(
-    `SELECT ts, thread_ts, user_id, is_internal, text, reactions, deleted, posted_at
+    `SELECT ts, thread_ts, user_id, is_internal, text, reactions, deleted, posted_at, answered_at
        FROM slack_messages WHERE channel_id = $1 ORDER BY ts ASC`,
     [channelId],
   );
@@ -160,6 +203,7 @@ async function loadChannelMessages(channelId: string): Promise<StoredSlackMessag
     reactions: r.reactions ?? {},
     deleted: r.deleted,
     postedAt: new Date(r.posted_at),
+    answeredAt: r.answered_at ? new Date(r.answered_at) : null,
   }));
 }
 
@@ -179,7 +223,26 @@ export async function reconcileChannel(channelId: string): Promise<number> {
 
   const messages = await loadChannelMessages(channelId);
   const internal = await internalUserIds();
-  const result = computePending(messages, internal);
+  const result = computePending(messages, internal, await externalUserIds(channelId));
+
+  // A channel nobody from the client has spoken in is not work and gets no
+  // row: 14 of the first 25 watched channels were review feeds whose every
+  // message is a bot's, and each one produced an item reading "no reply
+  // needed - replied" about a conversation that had never happened.
+  if (!messages.some((m) => !m.isInternal && !m.deleted)) {
+    // Clear pendingness as well as the row. A left-over pending flag is what
+    // the retention sweep refuses to delete around, so a stale one would pin
+    // the whole tail of the channel in the database forever.
+    await query('UPDATE slack_messages SET pending = false WHERE channel_id = $1 AND pending', [channelId]);
+    await removeChannelItem(channelId);
+    return 0;
+  }
+
+  // What the rules left pending still has to answer the question the mail
+  // side asks of every message: does this actually want a reply? Without a
+  // key the answer comes back unsure, which shows as low confidence rather
+  // than as a confident guess.
+  const unsure = await classifyPending(channelId, messages, result);
 
   // Persist pendingness per message, so the conversation view can mark the
   // individual ones and a later pass can reopen exactly what the model says.
@@ -205,8 +268,79 @@ export async function reconcileChannel(channelId: string): Promise<number> {
   // case the model is asked about, once the channel goes quiet.
   const ambiguous = ambiguousClosures(result).length > 0;
 
-  await writeChannelItem(channelId, ch[0].name, ch[0].client_id == null ? null : Number(ch[0].client_id), ambiguous);
+  await writeChannelItem(
+    channelId, ch[0].name, ch[0].client_id == null ? null : Number(ch[0].client_id), ambiguous || unsure,
+  );
   return 1;
+}
+
+/**
+ * Takes the pending verdicts to the needs-reply classifier.
+ *
+ * The deterministic rules answer "has anyone answered this?". They cannot
+ * answer "did it want an answer?" -- a client stating a fact, confirming
+ * something or thinking out loud reads exactly like a question to a rule that
+ * only looks for a reply after it. That is the same question the mail side
+ * puts to the classifier, so it goes through the same code and the same
+ * cache; one entry per message, keyed the way SPEC 13 keys mail.
+ *
+ * Only a confident no closes anything. Unsure leaves the message pending and
+ * returns true, which the item records as low confidence -- the override's
+ * rule, and what happens for every message while ANTHROPIC_API_KEY is unset.
+ */
+async function classifyPending(
+  channelId: string,
+  messages: StoredSlackMessage[],
+  result: PendingResult,
+): Promise<boolean> {
+  const pending = result.verdicts.filter((v) => v.pending);
+  if (pending.length === 0) return false;
+
+  const byTs = new Map(messages.map((m) => [m.ts, m]));
+  const names = new Map(
+    (await query<{ id: string; name: string }>('SELECT id, name FROM slack_users')).map((r) => [r.id, r.name]),
+  );
+  let unsure = false;
+
+  for (const verdict of pending) {
+    const m = byTs.get(verdict.ts);
+    if (!m) continue;
+    const text = renderSlackText(m.text, names).trim();
+    if (text === '') continue;
+
+    // The last thing we said before it, which is the context that decides
+    // whether a short answer is an answer or a new request.
+    const lastInternal = messages
+      .filter((x) => x.isInternal && !x.deleted && Number(x.ts) < Number(m.ts))
+      .at(-1);
+
+    const verdictFor = await classifyMessage(`slack:${channelId}:${m.ts}`, {
+      subject: '',
+      body: text,
+      lastInternalBody: lastInternal ? renderSlackText(lastInternal.text, names).slice(0, 2000) : undefined,
+      fromName: m.userId ? names.get(m.userId) : undefined,
+    });
+
+    if (!verdictFor.needsReply && verdictFor.confidence >= config.classifier.threshold) {
+      verdict.pending = false;
+      verdict.closedBy = 'classifier';
+      continue;
+    }
+    if (verdictFor.confidence < config.classifier.threshold) unsure = true;
+  }
+  return unsure;
+}
+
+/**
+ * Drops a channel's item and conversation.
+ *
+ * Used when a channel turns out to hold no client conversation at all. The
+ * messages stay -- the retention sweep owns those -- but an empty row on the
+ * queue is worse than no row: it claims a channel was dealt with.
+ */
+async function removeChannelItem(channelId: string): Promise<void> {
+  await query('DELETE FROM items WHERE slack_channel_id = $1', [channelId]);
+  await query('DELETE FROM conversations WHERE global_key = $1', [`slack:${channelId}`]);
 }
 
 /** Everything the row needs, computed from the messages rather than guessed. */
@@ -235,14 +369,23 @@ export async function writeChannelItem(
       WHERE channel_id = $1 AND pending AND NOT deleted ORDER BY ts ASC LIMIT 1`,
     [channelId],
   );
-  const preview = previewRow[0]?.text?.slice(0, 200) ?? null;
+  // Rendered before it is cut, not after: truncating the wire text at 200
+  // characters left "_Hi Tyler,_ _We're truly sorry..." with its closing
+  // underscore chopped off, so the list showed stray punctuation.
+  const previewNames = new Map(
+    (await query<{ id: string; name: string }>('SELECT id, name FROM slack_users')).map((r) => [r.id, r.name]),
+  );
+  const preview = previewRow[0] ? renderSlackText(previewRow[0].text, previewNames).slice(0, 200) : null;
+  // Ownership reads the raw text, not the preview: rendering resolves
+  // "<@U_US>" to "@Priya" and the id the owner lookup needs is gone.
+  const oldestPendingText = previewRow[0]?.text ?? '';
 
   // A channel with nothing pending is answered. "not_needed" is the honest
   // reason when the last thing the client said asked nothing of us.
   const state = pendingCount > 0 ? 'needs_reply' : 'no_reply_needed';
   const reason = pendingCount > 0 ? null : await closedReason(channelId);
 
-  const owner = await ownerForChannel(channelId, preview ?? '');
+  const owner = await ownerForChannel(channelId, oldestPendingText);
 
   await tx(async (c) => {
     const globalKey = `slack:${channelId}`;

@@ -619,46 +619,175 @@ td .mono > .btn { margin-left: 6px; }
    on its own width, so a column of them lands ragged. */
 td:has(select), td:has(input), td:has(.btn), td:has(button) { text-align: left; }
 
-/* ---- slack thread ---- */
-/* A channel reads top to bottom with replies hanging off the message they
-   answer. Flat, it was impossible to tell which reply belonged to which
-   question. */
-.slack-log { overflow-y: auto; flex: 1; padding: 4px 0; }
-.slack-node { border-bottom: 1px solid var(--border); }
-.slack-node:last-child { border-bottom: none; }
-.slack-msg { padding: 8px 14px; border-left: 3px solid transparent; }
-/* A message still waiting on us is the point of the row, so it is the thing
-   that stands out. */
-.slack-msg.pending { border-left-color: var(--danger); background: var(--panel); }
-.slack-msg.internal { background: var(--panel-2); }
-.slack-msg.deleted .slack-msg-body { text-decoration: line-through; opacity: .7; }
-.slack-msg-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; margin-bottom: 3px; }
-.slack-msg-head .btn.small { opacity: 0; transition: opacity .12s; }
-.slack-msg:hover .slack-msg-head .btn.small { opacity: 1; }
-.slack-composer select { max-width: 340px; }
-.slack-msg-body { font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
-
-/* Thread replies, indented under their parent with a rail, the way Slack
-   shows them. */
-.slack-replies { margin: 0 0 6px 28px; border-left: 2px solid var(--border); }
-.slack-replies-label {
-  font-size: 11.5px; color: var(--muted); padding: 4px 14px 2px; font-weight: 600;
+/* ---- slack rows in the inbox ---- */
+/* A channel row, not a mail row: a face, the channel, what was said and how
+   long it has been waiting. The mail layout spent its columns on a subject,
+   a sender address and a To line, none of which a Slack item has. */
+.row.slack-row {
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center; gap: 0 12px;
 }
-.slack-msg.is-reply { padding-top: 5px; padding-bottom: 5px; }
-.slack-msg.is-reply .slack-msg-body { font-size: 13px; }
+.slack-row-face {
+  width: 34px; height: 34px; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; letter-spacing: .3px;
+}
+.slack-row-main { min-width: 0; }
+.slack-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.slack-row-channel { font-weight: 650; font-size: 14px; }
+.slack-row-text {
+  color: var(--muted); font-size: 13px; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.slack-row-author { color: var(--text); font-weight: 600; margin-right: 5px; }
+.slack-row-owner { color: var(--muted); font-size: 12px; }
+.slack-row-age {
+  text-align: right; font-size: 12.5px; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.slack-row-age strong { color: var(--warn); }
 
-.slack-reactions { display: flex; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
+/* ---- slack conversation ---- */
+/* A channel, laid out the way Slack lays one out: an avatar column, the
+   author's name once per run of messages, a date between days, and thread
+   replies folded under the message they answer. The first cut repeated a
+   name-tag-timestamp header on every line, which read as a log file. */
+.slack-drawer .drawer-head { padding-bottom: 10px; }
+.slack-log {
+  overflow-y: auto; flex: 1; padding: 6px 0 14px;
+  display: flex; flex-direction: column;
+}
+.slack-waiting-count { color: var(--danger); font-weight: 650; }
+
+.slack-purge-note {
+  margin: 4px 16px 10px; padding: 7px 11px; border-radius: 7px;
+  background: var(--panel-2); border: 1px dashed var(--border);
+  color: var(--muted); font-size: 12px; line-height: 1.5;
+}
+
+/* A date line, Slack's horizontal rule with the day sitting on it. */
+.slack-day {
+  position: relative; text-align: center; margin: 14px 16px 10px;
+}
+.slack-day::before {
+  content: ''; position: absolute; left: 0; right: 0; top: 50%;
+  border-top: 1px solid var(--border);
+}
+.slack-day span {
+  position: relative; background: var(--panel); padding: 2px 12px;
+  border: 1px solid var(--border); border-radius: 999px;
+  font-size: 11.5px; font-weight: 650; color: var(--muted);
+}
+
+.slack-msg {
+  display: grid; grid-template-columns: 36px 1fr auto; gap: 9px;
+  align-items: start; padding: 7px 16px 7px 13px;
+  border-left: 3px solid transparent; position: relative;
+}
+.slack-msg.grouped { padding-top: 1px; padding-bottom: 1px; }
+.slack-msg:hover { background: var(--panel-2); }
+
+/* A message still waiting on us is the point of the whole screen. Slack's
+   own unread highlight is a warm wash with a rail, which is readable in
+   both themes in a way a red border alone was not. */
+.slack-msg.pending {
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  border-left-color: var(--warn);
+}
+.slack-msg.pending:hover { background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.slack-msg.deleted .slack-msg-body { opacity: .65; }
+
+.slack-avatar-col { display: flex; justify-content: flex-end; padding-top: 2px; min-height: 1px; }
+.slack-avatar {
+  width: 36px; height: 36px; border-radius: 8px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12.5px; font-weight: 700; letter-spacing: .3px;
+}
+.slack-avatar.tiny { width: 18px; height: 18px; border-radius: 4px; font-size: 8.5px; }
+/* On a grouped line Slack puts the time where the avatar would be, and only
+   while the pointer is on the row. */
+.slack-hover-time {
+  font-size: 10.5px; color: var(--muted); opacity: 0; font-variant-numeric: tabular-nums;
+  padding-top: 3px; white-space: nowrap;
+}
+.slack-msg:hover .slack-hover-time { opacity: 1; }
+
+.slack-msg-main { min-width: 0; }
+.slack-msg-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 1px; flex-wrap: wrap; }
+.slack-author { font-size: 14px; font-weight: 700; }
+.slack-time { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tag.us { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.tag.waiting {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn); border-color: transparent; font-weight: 650;
+}
+
+.slack-msg-body {
+  font-size: 14px; line-height: 1.52; white-space: pre-wrap; word-break: break-word;
+}
+.slack-msg-body a { color: var(--accent); }
+.slack-edited { font-size: 11px; color: var(--muted); }
+
+/* Mentions as chips, and ours in our own colour: in a channel of the
+   client's, "did they ask us or each other" is the entire question. */
+.slack-mention {
+  background: var(--panel-2); color: var(--muted);
+  border-radius: 4px; padding: 0 3px; font-weight: 600; white-space: nowrap;
+}
+.slack-mention.us, .slack-mention.broadcast {
+  background: var(--accent-soft); color: var(--accent);
+}
+.slack-custom-emoji { color: var(--muted); font-size: 12.5px; }
+.slack-code {
+  font-family: var(--mono); font-size: 12.5px; padding: 1px 4px; border-radius: 4px;
+  background: var(--panel-2); border: 1px solid var(--border);
+}
+.slack-code-block {
+  font-family: var(--mono); font-size: 12.5px; margin: 5px 0; padding: 8px 10px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  overflow-x: auto; white-space: pre;
+}
+.slack-quote {
+  margin: 3px 0; padding-left: 10px; border-left: 3px solid var(--border); color: var(--muted);
+}
+.slack-list { margin: 3px 0; padding-left: 20px; }
+
+/* Slack's hover toolbar: a floating control at the top right of the row
+   rather than a button in the text column, which on a long message sat
+   level with the fifth line and read as part of it. */
+.slack-answer-btn {
+  opacity: 0; transition: opacity .12s;
+  position: absolute; top: 4px; right: 12px;
+  background: var(--panel); border-color: var(--border);
+  box-shadow: 0 1px 4px rgb(0 0 0 / .12);
+}
+.slack-msg:hover .slack-answer-btn, .slack-answer-btn:focus-visible { opacity: 1; }
+
+/* The thread, folded. Slack shows a face pile and a count, and expands in
+   place rather than opening somewhere else. */
+.slack-thread { margin: 1px 0 6px 58px; }
+.slack-thread-toggle {
+  display: inline-flex; align-items: center; gap: 7px; padding: 3px 9px 3px 4px;
+  background: none; border: 1px solid transparent; border-radius: 999px;
+  color: var(--accent); font-size: 12.5px; font-weight: 650; cursor: pointer;
+}
+.slack-thread-toggle:hover { background: var(--panel); border-color: var(--border); }
+.slack-thread-faces { display: inline-flex; gap: 2px; }
+.slack-thread-caret { color: var(--muted); font-weight: 500; }
+.slack-replies {
+  margin-top: 2px; border-left: 2px solid var(--border); padding-left: 2px;
+}
+.slack-replies .slack-msg { padding-left: 10px; }
+.slack-replies .slack-avatar { width: 28px; height: 28px; font-size: 11px; }
+.slack-replies .slack-msg { grid-template-columns: 28px 1fr auto; }
+.slack-replies .slack-msg-body { font-size: 13.5px; }
+
+.slack-reactions { display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap; }
 .slack-reaction {
   font-size: 12px; color: var(--muted); background: var(--panel-2);
   border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
-  font-variant-numeric: tabular-nums;
 }
-.slack-composer { display: flex; flex-direction: column; gap: 7px; width: 100%; }
-.slack-composer textarea {
-  width: 100%; resize: vertical; padding: 8px 10px; border-radius: 6px;
-  border: 1px solid var(--border); background: var(--panel); color: var(--text);
-  font: inherit; line-height: 1.45;
-}
+.slack-reaction-n { font-variant-numeric: tabular-nums; font-weight: 650; }
 
 /* ---- waiting-time filter ---- */
 /* One control, not four loose pieces: a single bordered pill with internal

@@ -160,7 +160,12 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
           </>
         )}
 
-        {FLAGS.filter((f) => f.sources.includes(filters.source ?? 'gmail')).map((f) => (
+        {FLAGS
+          // Without a model every Slack item is low confidence by
+          // definition, so the chip selected the whole list and narrowed
+          // nothing. It comes back with ANTHROPIC_API_KEY.
+          .filter((f) => f.facet !== 'lowConfidence' || classifier !== 'heuristic')
+          .filter((f) => f.sources.includes(filters.source ?? 'gmail')).map((f) => (
           <button key={f.key} className={`chip ${filters[f.key] === 'true' ? 'on' : ''}`} onClick={() => toggleFlag(f.key)}>
             {f.label} <span className="chip-n">{data?.facets[f.facet] ?? 0}</span>
           </button>
@@ -191,13 +196,19 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
             selected={list(filters.teamIds)}
             onChange={(v) => set({ teamIds: v.join(',') })}
           />
-          <MultiSelect
-            label="Recipient"
-            searchable
-            options={users.map((u) => ({ value: String(u.id), label: u.email }))}
-            selected={list(filters.ownerUserIds)}
-            onChange={(v) => set({ ownerUserIds: v.join(',') })}
-          />
+          {/* Recipients are mail addresses. A Slack item is addressed to
+              whoever was @mentioned, who usually has no ReplyQueue account
+              at all -- 2 of 13 -- so the filter returned an empty list
+              whatever was picked. */}
+          {filters.source !== 'slack' && (
+            <MultiSelect
+              label="Recipient"
+              searchable
+              options={users.map((u) => ({ value: String(u.id), label: u.email }))}
+              selected={list(filters.ownerUserIds)}
+              onChange={(v) => set({ ownerUserIds: v.join(',') })}
+            />
+          )}
           <WaitFilter
             hours={filters.waitHours ?? DEFAULT_WAIT_HOURS}
             op={filters.waitOp === 'lt' ? 'lt' : 'gt'}
@@ -216,7 +227,7 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
             <input
               type="search"
               className="toolbar-search"
-              placeholder="Search subjects and summaries…"
+              placeholder={filters.source === 'slack' ? 'Search channels and messages…' : 'Search subjects and summaries…'}
               value={filters.search ?? ''}
               onChange={(e) => set({ search: e.target.value })}
             />
@@ -240,28 +251,23 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
       <div className="card list">
         {!data && !error && <div className="empty">Loading…</div>}
         {data?.items.length === 0 && <div className="empty">Nothing matches these filters.</div>}
-        {data?.items.map((it) => (
+        {data?.items.map((it) => (it.source === 'slack'
+          ? <SlackRow key={it.id} it={it} selected={openItem === it.id} onOpen={onOpen} />
+          : (
           <div key={it.id} className={`row ${openItem === it.id ? 'selected' : ''}`} onClick={() => onOpen(it.id, it.source)}>
             <div className="row-title">
               <StateDot state={it.state} />
-              {it.source === 'slack' && it.slackChannelName ? `#${it.slackChannelName}` : it.subject}
-              {it.source === 'slack' && it.pendingCount > 1 && (
-                <span className="tag">{it.pendingCount} waiting</span>
-              )}
+              {it.subject}
               {it.muted && <span className="tag">muted</span>}
               {it.reason && <span className="tag">{REASONS.find((r) => r.key === it.reason)?.label ?? it.reason}</span>}
               {it.filterReason && <span className="tag">{it.filterReason}</span>}
               {it.lowConfidence && classifier !== 'heuristic' && <span className="tag low-conf">low confidence</span>}
             </div>
-            <div className="row-right">
-              {/* A channel is judged by how long the oldest unanswered
-                  message has waited, not by its last activity. */}
-              {timeAgo(it.source === 'slack' ? (it.oldestPendingAt ?? it.lastActivityAt) : it.lastExternalAt)}
-            </div>
+            <div className="row-right">{timeAgo(it.lastExternalAt)}</div>
             <div className="row-meta">
               <span className={`tag ${it.clientName ? 'client' : ''}`}>{it.clientName ?? 'unmatched'}</span>
               {it.teamName && <span className="tag">{it.teamName}</span>}
-              <span>{it.source === 'slack' ? (it.fromName ?? it.fromEmail) : it.fromEmail}</span>
+              <span>{it.fromEmail}</span>
               {/* Who was written to, not who the item happens to be filed
                   under: a mail to one person copying five has one owner, and
                   naming the To line is what a reader is looking for. */}
@@ -270,18 +276,86 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
                   to: {formatRecipients(it.addressedTo?.length ? it.addressedTo : [it.ownerEmail!])}
                 </span>
               )}
-
-              {(it.source === 'slack' ? (it.preview ?? it.snippet) : it.summary) && (
-                <span style={{ flexBasis: '100%' }}>
-                  {it.source === 'slack' ? (it.preview ?? it.snippet) : it.summary}
-                </span>
-              )}
+              {it.summary && <span style={{ flexBasis: '100%' }}>{it.summary}</span>}
             </div>
           </div>
-        ))}
+        )))}
       </div>
     </>
   );
+}
+
+/**
+ * One channel, as a Slack channel list shows one: the author's face, the
+ * channel name, who they are, what they last said and how long it has been
+ * sitting there.
+ *
+ * A Slack row is not a mail row. There is no subject, no To line and no
+ * sender address; the columns the mail row spends on those were empty, and
+ * the one thing a reader wants -- the unanswered message -- was last.
+ */
+function SlackRow({ it, selected, onOpen }: {
+  it: QueueItem; selected: boolean; onOpen: (id: number, source?: 'gmail' | 'slack') => void;
+}) {
+  const waiting = it.pendingCount ?? 0;
+  const author = it.fromName ?? it.fromEmail ?? null;
+  const since = it.oldestPendingAt ?? it.lastActivityAt;
+  const text = it.preview ?? it.snippet ?? '';
+
+  return (
+    <div className={`row slack-row ${selected ? 'selected' : ''}`} onClick={() => onOpen(it.id, 'slack')}>
+      <div className="slack-row-face" style={rowAvatarStyle(it.slackChannelId ?? String(it.id))}>
+        {author ? rowInitials(author) : '#'}
+      </div>
+      <div className="slack-row-main">
+        <div className="slack-row-head">
+          <strong className="slack-row-channel">#{it.slackChannelName ?? 'channel'}</strong>
+          <span className={`tag ${it.clientName ? 'client' : ''}`}>{it.clientName ?? 'unmatched'}</span>
+          {it.teamName && <span className="tag">{it.teamName}</span>}
+          {waiting > 1 && <span className="tag waiting">{waiting} waiting</span>}
+          {it.reason && <span className="tag">{REASONS.find((r) => r.key === it.reason)?.label ?? it.reason}</span>}
+          {it.ownerEmail && <span className="slack-row-owner">to {it.ownerEmail.split('@')[0]}</span>}
+        </div>
+        <div className="slack-row-text">
+          {author && <span className="slack-row-author">{author}:</span>}
+          {text || <em className="muted">no message stored</em>}
+        </div>
+      </div>
+      <div className="slack-row-age">
+        {/* A channel is judged by how long the oldest unanswered message has
+            waited, not by when something last happened in it. */}
+        {waiting > 0
+          ? <><strong>{compactAge(since)}</strong><span className="muted"> waiting</span></>
+          : <span className="muted">{timeAgo(since)}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** "3d", "4h", "12m" -- a column, not a sentence. */
+function compactAge(iso: string | null): string {
+  if (!iso) return '—';
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+const ROW_HUES = [210, 340, 20, 150, 265, 45, 190, 300, 95, 0];
+function rowAvatarStyle(seed: string): React.CSSProperties {
+  let hash = 0;
+  for (const ch of seed) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  const hue = ROW_HUES[hash % ROW_HUES.length]!;
+  return { background: `hsl(${hue} 58% 52%)`, color: '#fff' };
+}
+
+function rowInitials(name: string): string {
+  // Letters and digits only: "Jacque [PST]" gave the initials "J[".
+  const parts = name.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '#';
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
 }
 
 const STATE_COLOR: Record<string, string> = {

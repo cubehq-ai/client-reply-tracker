@@ -23,5 +23,14 @@ export function renderSlackText(text: string, names: Map<string, string>): strin
     // Slack escapes these three in the wire format.
     .replace(/&gt;/g, '>')
     .replace(/&lt;/g, '<')
-    .replace(/&amp;/g, '&');
+    .replace(/&amp;/g, '&')
+    // mrkdwn emphasis. The browser renders it properly from the raw text;
+    // everywhere this function is used -- a list preview, a summary, the
+    // transcript a model reads -- wants the words, and a client's carefully
+    // italicised apology arriving as "_Hi Tyler,_" reads as a typo.
+    .replace(/```([\s\S]*?)```/g, '$1')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\*([^*\n]+)\*/g, '$1')
+    .replace(/_([^_\n]+)_/g, '$1')
+    .replace(/~([^~\n]+)~/g, '$1');
 }

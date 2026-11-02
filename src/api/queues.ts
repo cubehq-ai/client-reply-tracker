@@ -58,10 +58,19 @@ export interface QueueFilters {
  * Slack rows are channels, ordered the same way as the mail list: most
  * recent first, with a closed channel judged by its last activity.
  */
+/**
+ * Slack sorts by the thing the tab is for.
+ *
+ * Needs reply: oldest pending first, which is the override's rule and the
+ * product's whole question -- who has been waiting on us longest. It was
+ * DESC, so the list opened on the channel that had waited 12 days and the
+ * one that had waited 30 was at the bottom. The closed tab keeps newest
+ * first, where recency is what a reader is scanning for.
+ */
 function slackOrderClause(queue: string): string {
   return queue === 'no_reply_needed'
     ? 'GREATEST(i.last_client_message_at, i.last_internal_message_at) DESC NULLS LAST'
-    : 'i.oldest_pending_at DESC NULLS LAST';
+    : 'i.oldest_pending_at ASC NULLS LAST';
 }
 
 /**
@@ -169,6 +178,21 @@ function visibilityClause(user: SessionUser, view: QueueFilters['view'], params:
   )`;
 }
 
+/**
+ * An unwatched Slack channel's item stays in the table but off every list.
+ *
+ * Unwatching is how a person says "this is not client work" -- an internal
+ * channel the auto rule misread, a channel whose guest has left -- and it has
+ * to take the row off the queue, not just stop fetching new messages. The
+ * item is kept rather than deleted so re-watching restores it with its
+ * history, and the retention sweep is what eventually drops the messages.
+ */
+function watchedSlackClause(): string {
+  return `(i.slack_channel_id IS NULL OR EXISTS (
+            SELECT 1 FROM slack_channels w
+             WHERE w.id = i.slack_channel_id AND w.watched AND NOT w.is_archived))`;
+}
+
 function queueClause(queue: QueueName, params: unknown[]): string {
   switch (queue) {
     case 'needs_reply':
@@ -207,7 +231,7 @@ export async function listQueue(
   filters: QueueFilters = {},
 ): Promise<{ items: QueueItem[]; total: number }> {
   const params: unknown[] = [];
-  const where = [queueClause(queue, params), visibilityClause(user, filters.view, params)];
+  const where = [queueClause(queue, params), visibilityClause(user, filters.view, params), watchedSlackClause()];
 
   if (filters.clientIds?.length) { params.push(filters.clientIds); where.push(`i.client_id = ANY($${params.length}::bigint[])`); }
   if (filters.ownerUserIds?.length) { params.push(filters.ownerUserIds); where.push(recipientClause(params.length)); }
@@ -269,11 +293,21 @@ export async function listQueue(
              i.pending_count, i.oldest_pending_at, i.preview AS slack_preview,
              i.last_client_message_at, i.last_internal_message_at,
              GREATEST(i.last_client_message_at, i.last_internal_message_at) AS slack_last_activity,
-             -- Who is waiting: the author of the oldest message still pending.
+             -- Who is waiting: the author of the oldest message still
+             -- pending, or -- on the closed tab, where nothing is pending --
+             -- whoever spoke last. Without the fallback every closed channel
+             -- read "no message stored", which is not what happened to it.
              (SELECT COALESCE(su.name, sm.user_id) FROM slack_messages sm
                 LEFT JOIN slack_users su ON su.id = sm.user_id
                WHERE sm.channel_id = i.slack_channel_id AND sm.pending AND NOT sm.deleted
                ORDER BY sm.ts ASC LIMIT 1) AS slack_author,
+             (SELECT COALESCE(su.name, sm.user_id) FROM slack_messages sm
+                LEFT JOIN slack_users su ON su.id = sm.user_id
+               WHERE sm.channel_id = i.slack_channel_id AND NOT sm.deleted
+               ORDER BY sm.ts DESC LIMIT 1) AS slack_last_author,
+             (SELECT sm.text FROM slack_messages sm
+               WHERE sm.channel_id = i.slack_channel_id AND NOT sm.deleted
+               ORDER BY sm.ts DESC LIMIT 1) AS slack_last_text,
              (SELECT string_agg(sm.text, E'\n' ORDER BY sm.ts)
                 FROM slack_messages sm
                WHERE sm.conversation_id = i.conversation_id AND NOT sm.deleted) AS slack_text,
@@ -341,8 +375,8 @@ export async function listQueue(
       filterReason: r.filter_reason,
       // A Slack item has no mailbox or RFC sender; the author and the channel
       // play those roles so one row component renders both sources.
-      fromEmail: r.from_email ?? r.slack_author ?? null,
-      fromName: r.slack_author ?? null,
+      fromEmail: r.from_email ?? r.slack_author ?? r.slack_last_author ?? null,
+      fromName: r.slack_author ?? r.slack_last_author ?? null,
       snippet: r.snippet ?? (r.slack_text ? render(String(r.slack_text))!.split('\n')[0]?.slice(0, 200) : null),
       source: r.source ?? 'gmail',
       slackChannelId: r.slack_channel_id ?? null,
@@ -350,7 +384,9 @@ export async function listQueue(
       pendingCount: Number(r.pending_count ?? 0),
       oldestPendingAt: r.oldest_pending_at?.toISOString?.() ?? null,
       lastActivityAt: r.slack_last_activity?.toISOString?.() ?? null,
-      preview: r.source === 'slack' ? render(r.slack_preview) : null,
+      preview: r.source === 'slack'
+        ? (render(r.slack_preview) ?? render(r.slack_last_text)?.slice(0, 200) ?? null)
+        : null,
       mailboxes: r.mailboxes ?? [],
       teamName: r.team_name ?? null,
       lockedBy: r.locked_by ?? null,
@@ -414,12 +450,13 @@ export async function inboxFacets(user: SessionUser, filters: QueueFilters = {},
   total: number;
 }> {
   const params: unknown[] = [];
-  const where = [visibilityClause(user, filters.view, params)];
+  const where = [visibilityClause(user, filters.view, params), watchedSlackClause()];
 
   if (filters.clientIds?.length) { params.push(filters.clientIds); where.push(`i.client_id = ANY($${params.length}::bigint[])`); }
   if (filters.ownerUserIds?.length) { params.push(filters.ownerUserIds); where.push(recipientClause(params.length)); }
   if (filters.teamIds?.length) { params.push(filters.teamIds); where.push(`u.team_id = ANY($${params.length}::bigint[])`); }
   if (filters.source) { params.push(filters.source); where.push(`i.source = $${params.length}`); }
+  if (filters.channelIds?.length) { params.push(filters.channelIds); where.push(`i.slack_channel_id = ANY($${params.length}::text[])`); }
   if (filters.search) { params.push(`%${filters.search}%`); where.push(`(c.subject ILIKE $${params.length} OR i.summary ILIKE $${params.length})`); }
   // The two counts follow whatever threshold the reader has set, so the
   // control can label its own sides rather than quoting a fixed 12 hours.

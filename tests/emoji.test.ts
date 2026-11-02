@@ -25,6 +25,8 @@ describe('slack emoji', () => {
 
   it('labels a reaction with the emoji, or its name when custom', () => {
     expect(reactionLabel('eyes')).toBe('👀');
-    expect(reactionLabel('done-2')).toBe('done 2');
+    // A custom emoji keeps its shortcode: "gratitude thank you" read as if
+    // somebody had typed a sentence into the reaction row.
+    expect(reactionLabel('done-2')).toBe(':done-2:');
   });
 });

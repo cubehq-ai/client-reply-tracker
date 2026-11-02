@@ -4,6 +4,10 @@
  *
  * Credentials come from the environment; never hardcode a login here.
  *   QA_EMAIL=... QA_PASSWORD=... node scripts/qa.mjs
+ *
+ * Read-only by default. QA_SLACK_WRITE=true additionally exercises "Mark
+ * answered", which changes real data in whatever database QA_BASE_URL is
+ * pointed at.
  */
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
@@ -164,6 +168,83 @@ if (inbox.rows > 0) {
   await page.waitForTimeout(600);
 } else {
   note(false, 'inbox has no rows to open');
+}
+
+console.log('\nSlack');
+// The Slack tab is a channel list, not a mail list: a face, the channel, the
+// oldest unanswered message, and how long it has been sitting there.
+await page.click('.nav-item:has-text("Inbox")');
+await page.waitForTimeout(1200);
+const slackReady = await page.locator('.tabs .tab:has-text("Slack")').isEnabled();
+if (!slackReady) {
+  note(true, 'Slack tab reads "not connected" (no SLACK_USER_TOKEN)');
+} else {
+  await page.click('.tabs .tab:has-text("Slack")');
+  await page.waitForTimeout(2500);
+  await layoutChecks('slack');
+
+  const list = await page.evaluate(() => ({
+    rows: document.querySelectorAll('.row.slack-row').length,
+    mailRows: document.querySelectorAll('.row:not(.slack-row)').length,
+    filters: [...document.querySelectorAll('.multiselect-trigger')].map((e) => e.textContent.replace(/\d+$/, '').trim()),
+    // Raw mrkdwn in a preview is the bug this tab shipped with: "_Hi Tyler,_".
+    rawMarkup: [...document.querySelectorAll('.slack-row-text')]
+      .map((e) => e.textContent ?? '').filter((t) => /<@U|<#C|<http|```/.test(t)).length,
+    channels: [...document.querySelectorAll('.slack-row-channel')].map((e) => e.textContent),
+  }));
+  note(list.rows > 0, `slack tab lists ${list.rows} channels`);
+  note(list.mailRows === 0, 'no mail-shaped rows on the Slack tab');
+  note(list.rawMarkup === 0, `${list.rawMarkup} previews still showing raw Slack markup`);
+  note(list.channels.every((c) => c.startsWith('#')), 'every row names its channel');
+  note(!list.filters.includes('Recipient'), `slack filters are ${list.filters.join(', ')}`);
+
+  if (list.rows > 0) {
+    await page.locator('.row.slack-row').first().click();
+    await page.waitForSelector('.slack-drawer', { timeout: 20000 });
+    await page.waitForTimeout(2500);
+    const conv = await page.evaluate(() => {
+      const bodies = [...document.querySelectorAll('.slack-msg-body')].map((e) => e.textContent ?? '');
+      return {
+        messages: document.querySelectorAll('.slack-msg').length,
+        avatars: document.querySelectorAll('.slack-avatar').length,
+        days: document.querySelectorAll('.slack-day').length,
+        pending: document.querySelectorAll('.slack-msg.pending').length,
+        rawMarkup: bodies.filter((t) => /<@U[A-Z0-9]|<#C[A-Z0-9]|<https?:/.test(t)).length,
+        strayEmphasis: bodies.filter((t) => /(^|\s)[_*~][A-Za-z]/.test(t)).length,
+        headers: document.querySelectorAll('.slack-msg-head').length,
+        overflow: [...document.querySelectorAll('.slack-msg')]
+          .filter((e) => e.scrollWidth > e.clientWidth + 1).length,
+      };
+    });
+    note(conv.messages > 0, `conversation shows ${conv.messages} messages`);
+    note(conv.avatars > 0, 'messages carry an avatar');
+    note(conv.days > 0, 'days are separated');
+    note(conv.rawMarkup === 0, `${conv.rawMarkup} messages showing raw mention or link markup`);
+    note(conv.strayEmphasis === 0, `${conv.strayEmphasis} messages showing stray _ or * emphasis`);
+    // Grouping: consecutive messages from one person share a header, so
+    // there must be no more headers than messages.
+    note(conv.headers <= conv.messages, `${conv.headers} headers for ${conv.messages} messages`);
+    note(conv.overflow === 0, 'no message overflows the drawer');
+    await page.screenshot({ path: `${OUT}/slack-conversation.png` });
+
+    // Marking one message answered writes to the database this QA run is
+    // pointed at, which is usually production. Off unless asked for; the
+    // behaviour itself is covered by tests/slackIngest.test.ts.
+    if (conv.pending > 0 && process.env.QA_SLACK_WRITE === 'true') {
+      const before = await page.locator('.slack-msg.pending').count();
+      await page.locator('.slack-answer-btn').first().click({ force: true });
+      await page.waitForTimeout(2500);
+      const after = await page.locator('.slack-msg.pending').count();
+      note(after === before - 1, `mark answered: ${before} waiting -> ${after}`);
+    } else if (conv.pending > 0) {
+      const enabled = await page.locator('.slack-answer-btn').first().isEnabled();
+      note(enabled, 'each waiting message offers Mark answered (QA_SLACK_WRITE=true to exercise it)');
+    }
+    await page.locator('.drawer-head .btn', { hasText: 'Close' }).click();
+    await page.waitForTimeout(600);
+  }
+  await page.click('.tabs .tab:has-text("Email")');
+  await page.waitForTimeout(1500);
 }
 
 for (const [label, nav] of [['clients', 'Clients'], ['teams', 'Teams'], ['settings', 'Settings']]) {

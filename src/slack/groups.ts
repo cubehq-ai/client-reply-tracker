@@ -8,16 +8,78 @@ export interface StoredSlackMessage {
   reactions: Record<string, string[]>;
   deleted: boolean;
   postedAt: Date;
+  /** Set when a person marked it answered by hand. */
+  answeredAt?: Date | null;
 }
+
+/** The user ids @mentioned in a message, in order. */
+export function mentionsIn(text: string): string[] {
+  return [...text.matchAll(/<@([A-Z0-9_]+)(?:\|[^>]*)?>/g)].map((m) => m[1]!);
+}
+
+/** @here, @channel, @everyone or a user group: addressed to the room. */
+const BROADCAST = /<!(here|channel|everyone)\b|<!subteam\^/;
 
 /**
  * True when every @mention in the text is an internal user and there is at
  * least one. "@priya can you take this?" is one of us talking to another.
  */
 export function mentionsOnlyInternal(text: string, internalUserIds: Set<string>): boolean {
-  const mentions = [...text.matchAll(/<@([A-Z0-9_]+)(?:\|[^>]*)?>/g)].map((m) => m[1]!);
+  const mentions = mentionsIn(text);
   if (mentions.length === 0) return false;
   return mentions.every((id) => internalUserIds.has(id));
+}
+
+/**
+ * The mirror image: a client talking to their own colleagues.
+ *
+ * #reviews-mountainwest is a channel of the client's that we were invited
+ * into, and most of what is said in it is one of their people tagging
+ * another -- "@crosby for vis." Read as "the client said something and we
+ * never answered" that is fourteen items of work; read as what it is, it is
+ * none. The same rule we already apply to our own chatter, pointed the other
+ * way.
+ *
+ * Conservative on purpose. A mention we cannot resolve, or a broadcast to
+ * the room, could be meant for us, so only a message whose every mention is
+ * a known external person counts.
+ */
+export function mentionsOnlyOtherExternals(
+  text: string,
+  internalUserIds: Set<string>,
+  externalUserIds: Set<string>,
+): boolean {
+  if (BROADCAST.test(text)) return false;
+  const mentions = mentionsIn(text);
+  if (mentions.length === 0) return false;
+  if (mentions.some((id) => internalUserIds.has(id))) return false;
+  return mentions.every((id) => externalUserIds.has(id));
+}
+
+/**
+ * A message posted for visibility rather than for an answer.
+ *
+ * "@team for vis", "@Demi fyi", "cc @Ryan" -- a mention plus a stock phrase
+ * and nothing else. Slack channels are full of them and the deterministic
+ * rules read every one as a client waiting on us. They are not a question,
+ * they have no question mark, and once the mentions and links are stripped
+ * there is nothing left but the phrase.
+ *
+ * Narrow on purpose. Anything with a question, a request, or a sentence of
+ * its own attached falls through to the ordinary rules.
+ */
+const FYI_ONLY = /^(for vis(ibility)?|fyi|for (your )?(awareness|ref(erence)?|info(rmation)?)|heads[- ]?up|cc|flagging|sharing|noting)[.!\s]*$/i;
+
+export function isFyiOnly(text: string): boolean {
+  const stripped = text
+    .replace(/<[@#!][^>]*>/g, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/:[a-z0-9_+-]+:/g, ' ')
+    .replace(/[\p{Extended_Pictographic}\u200d\ufe0f]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (stripped === '' || stripped.includes('?')) return false;
+  return FYI_ONLY.test(stripped);
 }
 
 /**

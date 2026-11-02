@@ -145,6 +145,19 @@ export const config = {
     sendEnabled: bool('SLACK_SEND_ENABLED', false),
     /** Minutes of quiet before the LLM window runs on a channel. */
     debounceMinutes: num('SLACK_DEBOUNCE_MINUTES', 15),
+    /**
+     * How long an answered Slack message is kept. Deleted, not truncated:
+     * in a channel the metadata IS the message, so there is nothing left to
+     * keep once the text goes. Defaults to the backfill window, so what the
+     * sweep drops is exactly what a fresh backfill would not have fetched.
+     */
+    retentionDays: num('SLACK_RETENTION_DAYS', num('BACKFILL_DAYS', 30)),
+    /**
+     * Messages kept per channel regardless of age, so the conversation view
+     * has its context even in a channel that has been quiet for months. The
+     * view shows 50; keeping twice that leaves room above it.
+     */
+    keepRecentMessages: num('SLACK_KEEP_MESSAGES', 100),
   },
 
   safety: {

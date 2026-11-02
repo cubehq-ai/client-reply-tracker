@@ -101,31 +101,48 @@ export async function ensureSlackUsers(userIds: string[]): Promise<number> {
 
 export interface ChannelSyncResult {
   channels: number;
+  /** Channels with an external human in them, mapped or not. */
+  clientChannels: number;
   mapped: number;
+  watched: number;
   unmapped: string[];
 }
 
 /**
- * Lists the channels the token owner is in and maps each to a client.
+ * Lists every channel we can read and decides, per channel, whether it is a
+ * client conversation and whose.
  *
- * Order matters: a manual mapping is never overwritten, because a person
- * chose it. Auto mapping reads the external members' email domains and
- * accepts only an unambiguous answer -- a channel whose externals belong to
- * two clients is left for a human rather than guessed at.
+ * Two decisions, deliberately separate:
+ *
+ *   watched -- does a client talk to us here? Answered by whether any
+ *     external human is in the channel. #general and #sentry-alerts-* have
+ *     none; #reviews-california has twenty-nine.
+ *   client_id -- which client? Best effort. The dashboard has no domain rows
+ *     for most Slack-only accounts, so this stays null more often than not,
+ *     and the item carries unmatched_client rather than disappearing.
+ *
+ * Tying the first to the second, as the first cut did, hid every channel
+ * whose client the dashboard happens not to list -- 46 of 48 of them.
  */
 export async function syncSlackChannels(): Promise<ChannelSyncResult> {
-  if (!slackConfigured()) return { channels: 0, mapped: 0, unmapped: [] };
+  if (!slackConfigured()) return { channels: 0, clientChannels: 0, mapped: 0, watched: 0, unmapped: [] };
   const client = getSlackClient();
   const org = await loadOrgContext();
+  const clientNames = await loadClientNames();
 
   let cursor: string | null = null;
   let channels = 0;
+  let clientChannels = 0;
   let mapped = 0;
+  let watched = 0;
   const unmapped: string[] = [];
 
   do {
-    const page = await client.listMemberChannels(cursor);
+    const page = await client.listChannels(cursor);
     for (const ch of page.items) {
+      if (ch.isArchived) continue;
+      channels += 1;
+
       await query(
         `INSERT INTO slack_channels (id, name, is_private, is_shared, is_archived, updated_at)
          VALUES ($1,$2,$3,$4,$5, now())
@@ -134,76 +151,160 @@ export async function syncSlackChannels(): Promise<ChannelSyncResult> {
            is_shared = EXCLUDED.is_shared, is_archived = EXCLUDED.is_archived, updated_at = now()`,
         [ch.id, ch.name, ch.isPrivate, ch.isShared, ch.isArchived],
       );
-      channels += 1;
 
-      const existing = await query<{ client_id: string | null; mapping_source: string }>(
-        'SELECT client_id, mapping_source FROM slack_channels WHERE id = $1',
+      const existing = await query<{ client_id: string | null; mapping_source: string; watch_source: string }>(
+        'SELECT client_id, mapping_source, watch_source FROM slack_channels WHERE id = $1',
         [ch.id],
       );
-      if (existing[0]?.mapping_source === 'manual') {
-        if (existing[0].client_id) mapped += 1;
-        continue;
-      }
+      const row = existing[0]!;
 
-      const clientId = await inferChannelClient(ch.id, org);
-      if (clientId) {
+      const members = await channelMembers(ch.id);
+      const externals = await externalMembers(members);
+      if (externals.length > 0) clientChannels += 1;
+
+      await query(
+        'UPDATE slack_channels SET member_count = $2, external_member_count = $3, updated_at = now() WHERE id = $1',
+        [ch.id, members.length, externals.length],
+      );
+
+      // A person's mapping is never overwritten: they looked at the channel.
+      let clientId = row.client_id == null ? null : Number(row.client_id);
+      if (row.mapping_source !== 'manual') {
+        const inferred = inferChannelClient(ch.name, externals, org, clientNames);
+        clientId = inferred.clientId;
         await query(
-          `UPDATE slack_channels
-              SET client_id = $2, mapping_source = 'auto',
-                  -- A mapped channel is worth watching; a person can still
-                  -- turn it off in Settings and that choice survives, because
-                  -- watched is only defaulted when the mapping first lands.
-                  watched = CASE WHEN client_id IS DISTINCT FROM $2 THEN true ELSE watched END,
-                  updated_at = now()
+          `UPDATE slack_channels SET client_id = $2, mapping_source = 'auto', mapping_basis = $3, updated_at = now()
             WHERE id = $1`,
-          [ch.id, clientId],
+          [ch.id, inferred.clientId, inferred.basis],
         );
-        mapped += 1;
-      } else {
-        unmapped.push(ch.name);
       }
+      if (clientId != null) mapped += 1;
+      else if (externals.length > 0) unmapped.push(ch.name);
+
+      // Watching follows the externals, and only while nobody has decided by
+      // hand. A channel that loses its last external guest stops being work.
+      if (row.watch_source !== 'manual') {
+        await query('UPDATE slack_channels SET watched = $2, updated_at = now() WHERE id = $1',
+          [ch.id, externals.length > 0]);
+      }
+      const after = await query<{ watched: boolean }>('SELECT watched FROM slack_channels WHERE id = $1', [ch.id]);
+      if (after[0]?.watched) watched += 1;
     }
     cursor = page.cursor;
   } while (cursor);
 
-  logger.info({ channels, mapped, unmapped: unmapped.length }, 'slack channels synced');
-  return { channels, mapped, unmapped };
+  logger.info({ channels, clientChannels, mapped, watched, unmapped: unmapped.length }, 'slack channels synced');
+  return { channels, clientChannels, mapped, watched, unmapped };
 }
 
-/**
- * Reads the external members of a channel and maps them to a client. Returns
- * null unless exactly one client is implicated.
- */
-async function inferChannelClient(
-  channelId: string,
-  org: Awaited<ReturnType<typeof loadOrgContext>>,
-): Promise<number | null> {
-  const memberIds: string[] = [];
+async function channelMembers(channelId: string): Promise<string[]> {
+  const ids: string[] = [];
   let cursor: string | null = null;
   do {
     const page = await getSlackClient().listMembers(channelId, cursor);
-    memberIds.push(...page.items);
+    ids.push(...page.items);
     cursor = page.cursor;
   } while (cursor);
+  // The externals are exactly the people users.list does not return, so they
+  // have to be fetched one at a time before any of this means anything.
+  await ensureSlackUsers(ids);
+  return ids;
+}
 
-  if (memberIds.length === 0) return null;
-
-  // The externals are exactly the people users.list does not return.
-  await ensureSlackUsers(memberIds);
-
-  const externals = await query<{ email: string }>(
-    `SELECT DISTINCT email FROM slack_users
-      WHERE id = ANY($1::text[]) AND is_internal = false AND is_bot = false
-        AND deleted = false AND email IS NOT NULL`,
+async function externalMembers(memberIds: string[]): Promise<{ id: string; email: string | null }[]> {
+  if (memberIds.length === 0) return [];
+  return query<{ id: string; email: string | null }>(
+    `SELECT id, email::text AS email FROM slack_users
+      WHERE id = ANY($1::text[]) AND is_internal = false AND is_bot = false AND deleted = false`,
     [memberIds],
   );
+}
 
-  const found = new Set<number>();
-  for (const row of externals) {
-    const match = matchClient(org.clients, row.email);
-    if (match.clientId) found.add(match.clientId);
+interface ClientNameIndex {
+  /** Slug of the client name -> client id. Ambiguous slugs are dropped. */
+  bySlug: Map<string, number | null>;
+}
+
+async function loadClientNames(): Promise<ClientNameIndex> {
+  const rows = await query<{ id: string; name: string }>('SELECT id, name FROM clients WHERE NOT archived');
+  const bySlug = new Map<string, number | null>();
+  for (const r of rows) {
+    const key = slugify(r.name);
+    if (key.length < 5) continue;
+    // Two clients sharing a slug cannot be told apart by name, so neither wins.
+    bySlug.set(key, bySlug.has(key) ? null : Number(r.id));
   }
-  // Several clients in one channel is ambiguous, and picking one silently
-  // would file another client's messages under the wrong name.
-  return found.size === 1 ? [...found][0]! : null;
+  return { bySlug };
+}
+
+const slugify = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+/** Words in a channel name that say nothing about which client it is. */
+const CHANNEL_NOISE = new Set(['cube', 'cubehq', 'x', 'cl', 'team', 'with', 'and', 'the']);
+
+export interface ChannelMapping {
+  clientId: number | null;
+  /** How we got there, shown in Settings so a weak match reads as one. */
+  basis: 'email' | 'email_domain_name' | 'channel_name' | null;
+}
+
+/**
+ * Who a channel belongs to, strongest evidence first.
+ *
+ * 1. An external member's address maps to a client through client_domains or
+ *    client_contacts -- the same table the mail side matches on.
+ * 2. The registrable name in an external member's domain is a client's name:
+ *    madeforfreedom.com is "Made for freedom". The dashboard is missing most
+ *    of these domain rows, and the name is the same fact written differently.
+ * 3. The channel name contains a client's name: #just-enough-wines-x-cube.
+ *    Weakest, and last, because a channel can be named anything.
+ *
+ * Any step that implicates two clients is abandoned rather than guessed at:
+ * filing one client's conversation under another's name is worse than
+ * leaving it unmatched, which the UI already has a filter for.
+ */
+export function inferChannelClient(
+  channelName: string,
+  externals: { email: string | null }[],
+  org: { clients: Parameters<typeof matchClient>[0] },
+  names: ClientNameIndex,
+): ChannelMapping {
+  const emails = externals.map((e) => e.email).filter((e): e is string => e != null && e !== '');
+
+  const byEmail = new Set<number>();
+  for (const email of emails) {
+    const m = matchClient(org.clients, email);
+    if (m.clientId) byEmail.add(m.clientId);
+  }
+  if (byEmail.size === 1) return { clientId: [...byEmail][0]!, basis: 'email' };
+  if (byEmail.size > 1) return { clientId: null, basis: null };
+
+  const byDomainName = new Set<number>();
+  for (const domain of new Set(emails.map((e) => domainOf(e)))) {
+    if (org.clients.freeDomains.has(domain)) continue;
+    // "mail.madeforfreedom.com" and "madeforfreedom.com" both give the label
+    // one level above the public suffix a chance; co.uk makes the last two
+    // unreliable, so the second-to-last and third-to-last are both tried.
+    const parts = domain.split('.');
+    for (const label of [parts[parts.length - 2], parts[parts.length - 3]]) {
+      if (!label) continue;
+      const hit = names.bySlug.get(slugify(label));
+      if (hit) byDomainName.add(hit);
+    }
+  }
+  if (byDomainName.size === 1) return { clientId: [...byDomainName][0]!, basis: 'email_domain_name' };
+  if (byDomainName.size > 1) return { clientId: null, basis: null };
+
+  const joined = channelName.toLowerCase().split(/[^a-z0-9]+/i)
+    .filter((t) => t && !CHANNEL_NOISE.has(t)).join('');
+  if (joined.length >= 5) {
+    const byName = new Set<number>();
+    for (const [slug, id] of names.bySlug) {
+      if (id == null) continue;
+      if (joined.includes(slug) || (slug.includes(joined) && joined.length >= slug.length - 2)) byName.add(id);
+    }
+    if (byName.size === 1) return { clientId: [...byName][0]!, basis: 'channel_name' };
+  }
+
+  return { clientId: null, basis: null };
 }

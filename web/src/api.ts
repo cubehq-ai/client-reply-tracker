@@ -30,10 +30,16 @@ export interface SlackThread {
   channelId: string; channelName: string; clientName: string | null;
   permalink: string | null; postingAs: string | null;
   pendingCount: number; oldestPendingTs: string | null;
+  /** Set once the retention sweep has removed older messages. */
+  purgedThroughTs: string | null;
+  retentionDays: number;
+  /** Everyone named in the window, for rendering `<@U123>` mentions. */
+  users: Record<string, { name: string; isInternal: boolean }>;
   messages: {
     ts: string; author: string; authorId: string | null; isInternal: boolean;
+    /** Slack's own mrkdwn, rendered in the browser against `users`. */
     text: string; at: string; threadOf: string | null; pending: boolean;
-    deleted: boolean; reactions: Record<string, string[]>;
+    deleted: boolean; edited: boolean; reactions: Record<string, string[]>;
   }[];
 }
 

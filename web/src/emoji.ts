@@ -8,7 +8,26 @@
  * the colons, which at least reads as a word.
  */
 const EMOJI: Record<string, string> = {
-  '+1': '👍', thumbsup: '👍', '-1': '👎', thumbsdown: '👎',
+  '+1': '👍', thumbsup: '👍', plus1: '👍', '-1': '👎', thumbsdown: '👎',
+  blue_heart: '💙', green_heart: '💚', purple_heart: '💜', yellow_heart: '💛',
+  orange_heart: '🧡', black_heart: '🖤', white_heart: '🤍', heavy_heart_exclamation: '❣️',
+  heavy_plus_sign: '➕', heavy_minus_sign: '➖', heavy_division_sign: '➗',
+  raised_hand_with_fingers_splayed: '🖐️', ok_woman: '🙆', raising_hand: '🙋',
+  man_raising_hand: '🙋‍♂️', woman_raising_hand: '🙋‍♀️', bow: '🙇',
+  see_no_evil: '🙈', hear_no_evil: '🙉', speak_no_evil: '🙊',
+  face_with_rolling_eyes: '🙄', grimacing: '😬', relieved: '😌', yum: '😋',
+  smiling_imp: '😈', sleeping: '😴', sleepy: '😪', triumph: '😤', rage: '😡',
+  disappointed: '😞', pensive: '😔', persevere: '😣', weary: '😩', tired_face: '😫',
+  open_mouth: '😮', astonished: '😲', hushed: '😯', no_mouth: '😶',
+  face_palm: '🤦', facepalm: '🤦', shrug: '🤷', man_shrugging: '🤷‍♂️', woman_shrugging: '🤷‍♀️',
+  white_frowning_face: '☹️', slightly_frowning_face: '🙁',
+  checkered_flag: '🏁', dart: '🎯', medal: '🏅', first_place_medal: '🥇',
+  warning_sign: '⚠️', sos: '🆘', no_good: '🙅', raised_eyebrow: '🤨',
+  stopwatch: '⏱️', timer_clock: '⏲️', watch: '⌚', spiral_calendar_pad: '🗓️',
+  office: '🏢', house: '🏠', bed: '🛏️', door: '🚪', hotel: '🏨', key2: '🗝️',
+  broom: '🧹', soap: '🧼', sparkle: '❇️', wastebasket: '🗑️',
+  package: '📦', truck: '🚚', shopping_trolley: '🛒', label: '🏷️',
+  heavy_dollar_sign: '💲', chart: '💹', ledger: '📒', book: '📖', books: '📚',
   eyes: '👀', wave: '👋', pray: '🙏', clap: '👏', raised_hands: '🙌',
   ok_hand: '👌', muscle: '💪', point_up: '☝️', point_right: '👉',
   white_check_mark: '✅', heavy_check_mark: '✔️', ballot_box_with_check: '☑️',
@@ -60,7 +79,13 @@ export function renderEmoji(text: string): string {
     emojiFor(name.toLowerCase()) ?? whole);
 }
 
-/** A reaction's label: the emoji, or its name without the colon soup. */
+/**
+ * A reaction's label: the emoji, or the shortcode itself.
+ *
+ * A workspace's own emoji has no Unicode form, and spelling it out as
+ * "gratitude thank you" reads as if someone had typed a sentence. `:name:`
+ * at least says what it is.
+ */
 export function reactionLabel(name: string): string {
-  return emojiFor(name.toLowerCase()) ?? name.replace(/[-_]/g, ' ');
+  return emojiFor(name.toLowerCase()) ?? `:${name}:`;
 }

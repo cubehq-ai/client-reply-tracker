@@ -155,13 +155,17 @@ Commands: `inspect-internal-mongo`, `preview-internal-clients`, `sync-clients`,
 ## 4. Test results
 
 ```
-Test Files  19 passed (19)
-     Tests  172 passed (172)
+Test Files  37 passed (37)
+     Tests  382 passed (382)
 ```
 
 Plus browser QA: `QA_EMAIL=... QA_PASSWORD=... node scripts/qa.mjs` drives the
 real app and asserts layout invariants (no horizontal overflow, consistent
-control heights, composer closed by default, no console errors).
+control heights, composer closed by default, no console errors), and a Slack
+section that asserts the channel list is a channel list, that no raw Slack
+markup or stray `_emphasis_` reaches the screen in either the previews or the
+conversation, that messages carry avatars and days are separated, and that
+marking one message answered sticks.
 
 Run with `npm test`. Tests use a **local** Postgres (`TEST_DATABASE_URL`,
 defaulting to `postgres://localhost:5432/client_reply_tracker`) and never touch
@@ -180,7 +184,18 @@ decisions the spec actually cares about:
 - a muted thread stays ignored, an unmuted one reopens;
 - free email domains can never be mapped to a client;
 - business-hours SLA skips weekends and overnight;
-- the composer produces correctly threaded, correctly escaped MIME.
+- the composer produces correctly threaded, correctly escaped MIME;
+- a Slack channel with an external member is watched whether or not its client
+  can be named, and one with only our own people is not;
+- the client's own people tagging each other is not work, a broadcast or an
+  unresolved mention still is, and "@team for vis" is not;
+- a channel whose every message is a bot's gets no item at all;
+- retention deletes answered Slack messages past the window but never a
+  pending one, anything after it, a thread holding one, or the recent tail —
+  and unwatching a channel drops all of it and rearms the backfill;
+- the nightly mail reconcile leaves Slack items to Slack's own rules;
+- Slack mrkdwn renders as emphasis, links, code, quotes and mention chips,
+  with our own people distinguishable from the client's.
 
 ---
 
@@ -394,7 +409,7 @@ can knowingly proceed with a writable login during setup. Setting it is denied
 to the agent, and it only downgrades layer 2 — layer 3 still blocks writes.
 
 
-## Slack ingestion (2026-10-20)
+## Slack ingestion (updated 2026-11-02)
 
 ### How it is configured
 `SLACK_USER_TOKEN` in `.env` — a **user** token (`xoxp-`), not a bot token.
@@ -406,59 +421,140 @@ reads "not connected".
 | `SLACK_USER_TOKEN` | *(empty)* | The token. Empty = Slack off. |
 | `SLACK_SEND_ENABLED` | `false` | Replies are logged, not posted, until this is `true`. |
 | `SLACK_DEBOUNCE_MINUTES` | `15` | Quiet period before ambiguous groups go to the model. |
-| `SLACK_GROUP_GAP_MINUTES` | `10` | Gap that ends a run of consecutive client messages. |
+| `SLACK_RETENTION_DAYS` | `BACKFILL_DAYS` (30) | How long an **answered** message is kept. |
+| `SLACK_KEEP_MESSAGES` | `100` | Messages kept per channel whatever their age. |
 
 Scopes in use: `channels:read`, `channels:history`, `groups:read`,
 `groups:history`, `users:read`, `users:read.email`, `reactions:read`,
-`team:read`, `chat:write`.
+`team:read`.
 
-### Swapping to the shared account's token
-Nothing in the code depends on which account owns the token — the owner is read
-from `auth.test` at startup and shown in Settings and the composer.
+### What the token owner changes — nothing
+Discovery reads **every non-archived public channel in the workspace**, joined
+or not, plus the private channels the owner is in. A user token with
+`channels:history` can read a public channel without joining it, which is how
+the client channels are reachable: not one of them had been joined.
+
+The earlier version listed `users.conversations` — the owner's own channels —
+and so covered 4 of 48. Swapping the token now changes who replies would post
+as, and nothing else.
 
 1. Replace `SLACK_USER_TOKEN` in `.env`.
 2. Restart the API and worker.
-3. Settings → **Slack channels**, confirm the channel list (the new account is
-   in different channels) and map any that are unmapped.
+3. Settings → **Slack channels** to check the list. Nothing needs mapping for
+   ingestion to work.
 
-Watching a channel for the first time backfills it immediately, so a newly
-mapped channel is useful without waiting for the next poll.
+### Which channels are watched, and whose they are
+These are two separate decisions, and the Settings table keeps them apart.
+
+**Watched** — does a client talk to us here? Answered by whether any external
+human is a member. `#general`, `#random` and the nine `sentry-alerts-*`
+channels have none; `#reviews-california` has twenty-nine. 25 of 48 channels
+qualify.
+
+**Client** — which client? Best effort, strongest evidence first: an external
+member's address in `client_domains`/`client_contacts`; then that address's
+email domain matching a client's name (`madeforfreedom.com` → "Made for
+freedom"); then the channel name (`#just-enough-wines-x-cube`). Any step that
+implicates two clients gives up rather than guessing.
+
+Watching used to be gated on the client mapping, which hid 46 of 48 channels,
+because the dashboard has no domain rows for most accounts that live in Slack.
+An unmapped channel now shows its items as `unmatched`.
+
+### What counts as waiting on us
+Deterministic rules, in order; the first that fires closes the message.
+
+1. An internal reply in its thread, after it.
+2. A ✅ from one of us.
+3. The client's own people talking to each other — every `@mention` in the
+   message resolves to someone on their side. This is the mirror of the rule
+   for our chatter, and it matters: most of `#reviews-*` is Kasa staff tagging
+   Kasa staff, which read as 14 items of work in one channel.
+4. Posted for visibility — "@team for vis", "fyi", "cc @someone" and nothing
+   else. No question mark, no sentence of its own.
+5. An acknowledgement ("thanks", "👍"), or a later one from the same person.
+6. A top-level internal message after it that is not addressed only to
+   colleagues.
+7. Whatever survives goes to the **needs-reply classifier**, the same one the
+   mail side uses, cached per message. Only a confident "no" closes anything;
+   unsure leaves it waiting and marks the channel low confidence — which is
+   every message while `ANTHROPIC_API_KEY` is unset.
+
+A channel with no client message at all gets no item. Fourteen of the first
+twenty-five watched channels are bot review feeds, and each had produced a row
+reading "no reply needed — replied" about a conversation that never happened.
+
+### Retention — what is deleted and when
+`slack-retention`, nightly at 04:40. Slack is not mail: a channel is one
+endless conversation that arrives in order and is mostly answered within
+minutes, so an answered message past the window is deleted outright rather
+than emptied of its body the way a mail is.
+
+Never deleted:
+- anything still pending;
+- anything **at or after** the oldest pending message in its channel, so
+  reconciliation recomputes the same answer from what is left;
+- any thread holding a pending message;
+- the newest `SLACK_KEEP_MESSAGES` per channel, and anything inside
+  `SLACK_RETENTION_DAYS`.
+
+A channel that stops being watched loses all of its messages, and its
+`last_synced_ts`/`backfilled_at` are cleared so re-watching backfills afresh
+rather than resuming from a watermark whose messages are gone. Unwatching from
+Settings purges immediately rather than waiting for 04:40.
+
+Bot and app messages, joins and topic changes are never stored at all, which
+is what keeps `#connector-statuses` — 16,360 messages in thirty days — out of
+the database even if somebody watches it.
+
+Taken together the store is bounded rather than growing: roughly
+`watched channels × SLACK_KEEP_MESSAGES`, plus whatever is still waiting,
+plus the last 30 days. At 25 watched channels that is a few thousand rows.
+It is 252 today.
 
 ### Schedule
 | Job | Cadence |
 |---|---|
 | `slack-sync` — history per watched channel | every 2 min |
 | `slack-window` — the ambiguous groups | every 5 min, only after a channel is quiet |
-| `slack-channels` — channel list and auto mapping | hourly |
+| `slack-channels` — channel list, membership, auto mapping | hourly at :17 |
 | `slack-users` — user directory | daily 05:00 |
+| `slack-retention` — delete answered messages past the window | daily 04:40 |
 
-### Channels, as of this writing
-The token belongs to **sasi** in **Cube HQ**, which is in 4 channels:
+### The workspace as of 2026-11-02
+Token owner **sasi** in **Cube HQ**. 48 channels, 25 watched, 252 messages
+stored, 13 items — 9 needing a reply across 35 waiting messages.
 
-| Channel | Mapped | Watched |
+| Channel | Client | Matched on |
 |---|---|---|
-| `#team-kasa-x-cube` (Slack Connect) | **no client** | yes (watched by hand to verify the pipeline) |
-| `#general` | no | no |
-| `#random` | no | no |
-| `#connector-statuses` | no | no |
-
-`#team-kasa-x-cube` produced 13 client groups: 3 needing a reply, 10 detected as
-already answered.
+| `#made-for-freedom-x-cube` | Made for freedom | an external member's address |
+| `#planteddetroit-cube` | Planted Detroit | an external member's address |
+| `#cl-blackbrookcase-alia` | BlackBrook | the channel name |
+| the other 22 watched channels | *unmatched* | — |
 
 ### Left for a human
-- **Kasa is not a client in the dashboard.** All 41 external members of
-  `#team-kasa-x-cube` are `@kasa.com`, and no client has that domain, so auto
-  mapping correctly refused to guess. Either add Kasa as a client with the
-  domain, or map the channel by hand in Settings → Slack channels. Until then
-  its items show as `unmatched`.
-- **`#team-kasa-x-cube` was set to watched by hand** to verify the pipeline
-  end to end. Untick it in Settings if you would rather it were not ingested yet.
-- **Replies are a dry run.** `SLACK_SEND_ENABLED=false`, so Reply logs the
-  payload. Set it to `true` when you want real posts.
-- **No `ANTHROPIC_API_KEY`**, so the LLM window falls back to closing
-  answered-looking groups with `low_confidence` set rather than asking a model
-  which client message a reply answered.
-
+- **Most watched channels have no client.** Kasa (17 `#reviews-*` channels
+  plus `#team-kasa-x-cube`, every external member `@kasa.com`), Balance
+  Grille, Adagio Teas, Moon Audio, Tribetokes and Cartlift are not in the
+  dashboard at all. `behno` and `Just Enough Wines` are there but archived, so
+  they are deliberately skipped. Either add them in the dashboard with their
+  domains, or map the channels by hand in Settings → **Slack channels**; the
+  items work either way, they just read `unmatched`.
+- **No `ANTHROPIC_API_KEY`.** The needs-reply classifier falls back to
+  keywords and answers "unsure" for nearly everything, so every Slack item
+  carries `low_confidence` and the Low confidence chip is hidden as it would
+  select the whole list. This is the single biggest quality lever left: with a
+  key, statements of fact from a client ("No, I don't believe I interacted
+  with them") stop being counted as questions. The LLM window for ambiguous
+  closures is also disabled without it.
+- **Replies are a dry run.** `SLACK_SEND_ENABLED=false`. There is no composer
+  in the Slack drawer by design — replies are written in Slack, where the
+  threading, formatting and files are — so this only affects the API.
+- **`chat:write` is not in the current token's scopes**, so posting would fail
+  even with `SLACK_SEND_ENABLED=true`. Re-authorise with it if you want the
+  dashboard to post.
+- **`#team-kasa-x-cube` is watched by hand** (`watch_source = 'manual'` from
+  before the auto rule existed). It would be watched automatically now anyway.
 
 ## Deploying to Railway (2026-10-20)
 
@@ -509,11 +605,12 @@ worked.
 | `slack-window` | every 5 min | the ambiguous Slack groups, once a channel is quiet |
 | `hourly-status` | hourly at :05 | re-reads open threads, catching replies sent from mailboxes we do not watch |
 | `sync-clients` | hourly | clients and domains from the dashboard |
-| `slack-channels` | hourly at :17 | channel list and auto client mapping |
+| `slack-channels` | hourly at :17 | channel list, membership and auto client mapping |
 | `discover` | 02:00 | mailbox discovery — skips unless `GOOGLE_ADMIN_SUBJECT` is set |
 | `renew-watches` | 03:00 | no-op until `PUBSUB_TOPIC` is set |
-| `reconcile` | 04:00 | full recompute; takes ~8 min at 900 items |
-| `purge-bodies` | 04:30 | retention, `BODY_RETENTION_DAYS` |
+| `reconcile` | 04:00 | full recompute of mail items, then every watched Slack channel; ~1 hour at 2,400 items against Neon — `npm run jobs-qa` skips the mail half unless `QA_JOBS_HEAVY=true` |
+| `purge-bodies` | 04:30 | mail retention, `BODY_RETENTION_DAYS` |
+| `slack-retention` | 04:40 | deletes answered Slack messages, `SLACK_RETENTION_DAYS` |
 | `slack-users` | 05:00 | Slack directory |
 | `digests` | 08:00 Mon–Fri | owner and manager digests |
 | `sync-teams` | 18:00 | teams and membership from the dashboard |
@@ -528,7 +625,7 @@ worked.
    ```
    Run it against the production database (Railway shell, or locally with
    `DATABASE_URL` set to production). It ends every existing session too.
-3. `npm run jobs-qa` to confirm all 15 scheduled jobs run in the new
+3. `npm run jobs-qa` to confirm all 16 scheduled jobs run in the new
    environment.
 
 ### Known gaps at deploy time

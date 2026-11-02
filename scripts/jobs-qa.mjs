@@ -54,6 +54,7 @@ const { renewWatches } = await import('../src/sync/watch.js');
 const { syncSlackChannels, syncSlackUsers } = await import('../src/slack/sync.js');
 const { syncSlackChannelMessages } = await import('../src/slack/ingest.js');
 const { runSlackWindows } = await import('../src/slack/window.js');
+const { purgeSlackMessages } = await import('../src/slack/retention.js');
 
 await check('sync', '*/10 * * * *', async () => {
   if (heavy) return syncAllMailboxes();
@@ -73,7 +74,19 @@ await check('sweeps:alerts', '*/5 * * * *', () => sendImmediateAlerts());
 await check('hourly-status', '5 * * * *', () => checkUnrespondedItems(5));
 await check('discover', '0 2 * * *', () => discoverMailboxes());
 await check('renew-watches', '0 3 * * *', () => renewWatches());
-await check('reconcile', '0 4 * * *', () => reconcileOpenItems());
+// The full pass recomputes every open item one transaction at a time: over
+// an hour against a remote database at 2,400 items, which made the whole
+// harness unrunnable. QA_JOBS_HEAVY=true runs it for real; otherwise the
+// Slack half -- which is the cheap half and the one that regressed -- runs
+// on its own and proves the path.
+await check('reconcile', '0 4 * * *', async () => {
+  if (heavy) return reconcileOpenItems();
+  const { reconcileChannel } = await import('../src/slack/ingest.js');
+  const { query } = await import('../src/db/pool.js');
+  const channels = await query('SELECT id FROM slack_channels WHERE watched AND NOT is_archived');
+  for (const c of channels) await reconcileChannel(c.id);
+  return { slackChannels: channels.length, mailItems: 'skipped (QA_JOBS_HEAVY=true for the full pass)' };
+});
 await check('purge-bodies', '30 4 * * *', () => purgeOldBodies(), {
   skip: allowWrites ? undefined : 'writes disabled',
 });
@@ -84,6 +97,9 @@ await check('slack-sync', '*/2 * * * *', () => syncSlackChannelMessages(), { ski
 await check('slack-window', '*/5 * * * *', () => runSlackWindows(), { skip: slackSkip });
 await check('slack-channels', '17 * * * *', () => syncSlackChannels(), { skip: slackSkip });
 await check('slack-users', '0 5 * * *', () => syncSlackUsers(), { skip: slackSkip });
+await check('slack-retention', '40 4 * * *', () => purgeSlackMessages(), {
+  skip: slackSkip ?? (allowWrites ? undefined : 'writes disabled'),
+});
 
 console.log(`\ntimezone: ${config.sla.timezone}   gmail: ${config.google.backend}   slack: ${slackEnabled() ? 'on' : 'off'}\n`);
 for (const r of results) {

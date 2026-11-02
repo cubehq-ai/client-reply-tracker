@@ -27,7 +27,7 @@ export class FakeSlackClient implements SlackClient {
     return this.workspace.identity;
   }
 
-  async listMemberChannels(): Promise<SlackPage<SlackChannel>> {
+  async listChannels(): Promise<SlackPage<SlackChannel>> {
     return { items: this.workspace.channels.filter((c) => !c.isArchived), cursor: null };
   }
 

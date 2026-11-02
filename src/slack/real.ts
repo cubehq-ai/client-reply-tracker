@@ -79,15 +79,44 @@ export class RealSlackClient implements SlackClient {
     };
   }
 
-  async listMemberChannels(cursor: string | null = null): Promise<SlackPage<SlackChannel>> {
+  /**
+   * Public channels from the workspace, then the owner's private ones.
+   *
+   * Two listings behind one cursor, tagged `pub:` or `priv:` so the caller
+   * keeps passing an opaque string back. conversations.list covers every
+   * public channel whether or not the owner joined it -- which is the point,
+   * since the client channels are public ones nobody on our side joined --
+   * and users.conversations is the only way to see a private channel, where
+   * membership genuinely is the permission.
+   */
+  async listChannels(cursor: string | null = null): Promise<SlackPage<SlackChannel>> {
+    const phase = cursor?.startsWith('priv:') ? 'priv' : 'pub';
+    const inner = cursor ? cursor.slice(phase.length + 1) : '';
+
+    if (phase === 'pub') {
+      const r = await this.call('conversations.list', {
+        types: 'public_channel',
+        exclude_archived: 'true',
+        limit: 200,
+        cursor: inner || undefined,
+      });
+      const next = RealSlackClient.cursorOf(r);
+      return {
+        items: ((r.channels as any[]) ?? []).map(toChannel),
+        // Public pages first; an exhausted public listing hands over to the
+        // private one rather than ending the walk.
+        cursor: next ? `pub:${next}` : 'priv:',
+      };
+    }
+
     const r = await this.call('users.conversations', {
-      types: 'public_channel,private_channel',
+      types: 'private_channel',
       exclude_archived: 'true',
       limit: 200,
-      cursor: cursor ?? undefined,
+      cursor: inner || undefined,
     });
-    const items = ((r.channels as any[]) ?? []).map(toChannel);
-    return { items, cursor: RealSlackClient.cursorOf(r) };
+    const next = RealSlackClient.cursorOf(r);
+    return { items: ((r.channels as any[]) ?? []).map(toChannel), cursor: next ? `priv:${next}` : null };
   }
 
   async listUsers(cursor: string | null = null): Promise<SlackPage<SlackUser>> {
@@ -160,6 +189,7 @@ function toChannel(c: any): SlackChannel {
     isPrivate: Boolean(c.is_private),
     isShared: Boolean(c.is_shared || c.is_ext_shared || c.is_pending_ext_shared),
     isArchived: Boolean(c.is_archived),
+    isMember: Boolean(c.is_member),
   };
 }
 

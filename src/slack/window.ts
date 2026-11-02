@@ -3,7 +3,7 @@ import { config, useRealClassifier } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { getLlmClient } from '../llm/index.js';
 import { ambiguousClosures, computePending } from './pending.js';
-import { writeChannelItem } from './ingest.js';
+import { externalUserIds, writeChannelItem } from './ingest.js';
 import type { StoredSlackMessage } from './groups.js';
 
 export interface WindowResult {
@@ -62,7 +62,9 @@ async function runWindowForChannel(channelId: string, channelName: string, haveM
   const internal = new Set(
     (await query<{ id: string }>('SELECT id FROM slack_users WHERE is_internal')).map((r) => r.id),
   );
-  const result = computePending(messages, internal);
+  // The same inputs reconciliation uses, or the two passes disagree about
+  // what is pending and the window reopens what the sync just closed.
+  const result = computePending(messages, internal, await externalUserIds(channelId));
   const suspect = ambiguousClosures(result);
   if (suspect.length === 0) return { channel: channelName, decided: 0, skipped: null };
 
@@ -103,13 +105,14 @@ async function runWindowForChannel(channelId: string, channelName: string, haveM
 
 async function loadMessages(channelId: string): Promise<StoredSlackMessage[]> {
   const rows = await query<any>(
-    `SELECT ts, thread_ts, user_id, is_internal, text, reactions, deleted, posted_at
+    `SELECT ts, thread_ts, user_id, is_internal, text, reactions, deleted, posted_at, answered_at
        FROM slack_messages WHERE channel_id = $1 ORDER BY ts ASC`,
     [channelId],
   );
   return rows.map((r) => ({
     ts: r.ts, threadTs: r.thread_ts, userId: r.user_id, isInternal: r.is_internal,
     text: r.text, reactions: r.reactions ?? {}, deleted: r.deleted, postedAt: new Date(r.posted_at),
+    answeredAt: r.answered_at ? new Date(r.answered_at) : null,
   }));
 }
 

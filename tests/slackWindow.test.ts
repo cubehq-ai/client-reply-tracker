@@ -26,7 +26,7 @@ function modelReturning(unanswered: string[]): LlmClient {
 
 async function twoPendingGroups(): Promise<void> {
   const ws = emptyWorkspace();
-  ws.channels = [{ id: CH, name: 'acme-cube', isPrivate: false, isShared: true, isArchived: false }];
+  ws.channels = [{ id: CH, name: 'acme-cube', isPrivate: false, isShared: true, isArchived: false, isMember: true }];
   ws.users = [
     { id: US, teamId: 'T_ORG', email: 'priya@cubehq.ai', name: 'Priya', isBot: false, deleted: false },
     { id: CLIENT, teamId: 'T_ACME', email: 'ops@acme.com', name: 'Dana', isBot: false, deleted: false },

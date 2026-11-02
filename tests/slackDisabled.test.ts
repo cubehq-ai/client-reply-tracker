@@ -24,7 +24,7 @@ describe('slack without a token', () => {
     const { syncSlackChannelMessages } = await import('../src/slack/ingest.js');
 
     expect(await syncSlackUsers()).toEqual({ users: 0, internal: 0 });
-    expect(await syncSlackChannels()).toEqual({ channels: 0, mapped: 0, unmapped: [] });
+    expect(await syncSlackChannels()).toEqual({ channels: 0, clientChannels: 0, mapped: 0, watched: 0, unmapped: [] });
     expect(await syncSlackChannelMessages()).toEqual([]);
     expect(fetchSpy).not.toHaveBeenCalled();
   });

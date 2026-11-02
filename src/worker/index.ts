@@ -16,6 +16,7 @@ import { renewWatches } from '../sync/watch.js';
 import { syncSlackChannels, syncSlackUsers } from '../slack/sync.js';
 import { syncSlackChannelMessages } from '../slack/ingest.js';
 import { runSlackWindows } from '../slack/window.js';
+import { purgeSlackMessages } from '../slack/retention.js';
 import { slackEnabled } from '../lib/config.js';
 
 /** Runs a job with a row in job_runs, so the admin page shows what happened. */
@@ -94,6 +95,10 @@ export function startWorker(): void {
     // Membership and the channel list change rarely.
     cron.schedule('17 * * * *', guarded('slack-channels', () => syncSlackChannels()), { timezone: tz });
     cron.schedule('0 5 * * *', guarded('slack-users', () => syncSlackUsers()), { timezone: tz });
+
+    // Answered messages past the window, and everything in a channel we no
+    // longer watch. Right after the mail purge, for one quiet hour of deletes.
+    cron.schedule('40 4 * * *', guarded('slack-retention', () => purgeSlackMessages()), { timezone: tz });
   }
 
   // Daily mailbox discovery (SPEC 3.1).
@@ -125,7 +130,10 @@ if (isEntrypoint(import.meta.url)) {
       await syncSlackUsers();
       const channels = await syncSlackChannels();
       const messages = await syncSlackChannelMessages();
-      return { channels, messages };
+      // A channel the channel sync just stopped watching should not leave its
+      // messages behind until 04:40 the next morning.
+      const retention = await purgeSlackMessages();
+      return { channels, messages, retention };
     });
   }
 

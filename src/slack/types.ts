@@ -22,6 +22,10 @@ export interface SlackChannel {
   /** Slack Connect: the channel is shared with an external workspace. */
   isShared: boolean;
   isArchived: boolean;
+  /** Whether the token owner has joined it. Diagnostics only: a public
+   *  channel is readable either way, and which account holds the token must
+   *  not decide what the queue covers. */
+  isMember: boolean;
 }
 
 export interface SlackUser {
@@ -68,8 +72,16 @@ export interface PostResult {
 export interface SlackClient {
   /** Who the token belongs to. Nothing may depend on this being a given user. */
   authTest(): Promise<SlackIdentity>;
-  /** Channels the token owner is a member of, public and private. */
-  listMemberChannels(cursor?: string | null): Promise<SlackPage<SlackChannel>>;
+  /**
+   * Every channel we can read: all non-archived public channels in the
+   * workspace, joined or not, plus the private ones the token owner is in.
+   *
+   * Not "the owner's channels". A user token with channels:history reads any
+   * public channel without joining it, and the client channels are public
+   * ones the owner has not joined -- listing only joined channels covered 4
+   * of 48 and made the queue a property of whose token it is.
+   */
+  listChannels(cursor?: string | null): Promise<SlackPage<SlackChannel>>;
   listUsers(cursor?: string | null): Promise<SlackPage<SlackUser>>;
   /** User ids in a channel. Membership, not authorship: a client who has not
    *  posted yet still identifies whose channel it is. */

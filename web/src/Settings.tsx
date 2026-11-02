@@ -454,12 +454,34 @@ function Clients({ onChanged }: { onChanged: () => void }) {
 
 
 /**
+ * The rows to show: everything, or only the channels that are client work --
+ * watched, or holding a guest, or already mapped by hand.
+ */
+function shown(channels: any[], q: string, all: boolean): any[] {
+  const needle = q.trim().toLowerCase();
+  return channels.filter((c) => {
+    if (needle && !String(c.name ?? '').toLowerCase().includes(needle)) return false;
+    if (all) return true;
+    return Boolean(c.watched) || Number(c.external_member_count ?? 0) > 0 || c.client_id != null;
+  });
+}
+
+/** How a channel came to be mapped, in words rather than a column name. */
+const MAPPING_BASIS: Record<string, string> = {
+  email: "an external member's address",
+  email_domain_name: "an external member's email domain",
+  channel_name: 'the channel name',
+};
+
+/**
  * Which Slack channels belong to which client, and which are watched.
  *
- * Auto mapping only answers when the channel's external members point at
- * exactly one client, which in practice means the client has to be in the
- * dashboard with a domain recorded. Everything else lands here for a person
- * to decide.
+ * Two different questions, and the table keeps them apart. A channel is
+ * watched because a client talks to us in it -- which is to say somebody
+ * outside the org is a member -- and the client mapping is a separate,
+ * best-effort attempt to name them. The dashboard has no domain row for
+ * most accounts that live in Slack, so "unmatched but watched" is the
+ * normal case and not an error.
  */
 function SlackChannels({ clients, onChanged }: { clients: any[]; onChanged: () => void }) {
   const [status, setStatus] = useState<any>(null);
@@ -467,6 +489,10 @@ function SlackChannels({ clients, onChanged }: { clients: any[]; onChanged: () =
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // 48 channels, 23 of which are alert feeds nobody will ever map. The list
+  // opens on the ones that are actually work.
+  const [showAll, setShowAll] = useState(false);
+  const [q, setQ] = useState('');
 
   const load = (): void => {
     api.slackStatus().then(setStatus).catch((e) => setError(e.message));
@@ -507,22 +533,49 @@ function SlackChannels({ clients, onChanged }: { clients: any[]; onChanged: () =
         <div className="subtitle">
           Reading as <strong>{status.postingAs?.userName ?? 'unknown'}</strong>
           {status.postingAs?.teamName ? ` in ${status.postingAs.teamName}` : ''} ·{' '}
-          {status.watchedChannels} watched · {status.unmappedChannels} unmapped ·{' '}
+          {status.watchedChannels} watched · {status.unmappedChannels} with no client ·{' '}
           replies {status.sendEnabled ? 'post for real' : 'are a dry run'}
+          <br />
+          A channel is watched automatically when someone outside the org is a member of it.
+          Tick or untick one here and that choice sticks — the hourly sync stops deciding for it.
         </div>
       )}
+      <div className="toolbar-filters" style={{ margin: '4px 0 10px' }}>
+        <input
+          type="search"
+          className="toolbar-search"
+          style={{ width: 220 }}
+          placeholder="Find a channel…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <button className={`chip ${showAll ? '' : 'on'}`} onClick={() => setShowAll(false)}>
+          Client channels <span className="chip-n">{shown(channels, '', false).length}</span>
+        </button>
+        <button className={`chip ${showAll ? 'on' : ''}`} onClick={() => setShowAll(true)}>
+          All <span className="chip-n">{channels.length}</span>
+        </button>
+      </div>
       <table>
         <thead>
-          <tr><th>Channel</th><th>Client</th><th>Watched</th><th>Open</th></tr>
+          <tr>
+            <th>Channel</th><th>Client</th><th className="num">Guests</th>
+            <th className="num">Stored</th><th>Watched</th><th className="num">Open</th>
+          </tr>
         </thead>
         <tbody>
-          {channels.map((c) => (
+          {shown(channels, q, showAll).map((c) => (
             <tr key={c.id}>
               <td>
                 #{c.name}
                 {c.is_shared && <span className="tag" style={{ marginLeft: 6 }}>connect</span>}
                 {c.is_private && <span className="tag" style={{ marginLeft: 6 }}>private</span>}
                 {c.mapping_source === 'manual' && <span className="tag" style={{ marginLeft: 6 }}>manual</span>}
+                {c.mapping_source !== 'manual' && c.client_id && c.mapping_basis && (
+                  <span className="tag" style={{ marginLeft: 6 }} title={`Matched on ${MAPPING_BASIS[c.mapping_basis] ?? c.mapping_basis}`}>
+                    auto
+                  </span>
+                )}
               </td>
               <td>
                 <select
@@ -534,6 +587,10 @@ function SlackChannels({ clients, onChanged }: { clients: any[]; onChanged: () =
                   {clients.map((cl) => <option key={cl.id} value={cl.id}>{cl.name}</option>)}
                 </select>
               </td>
+              <td className="num">{c.external_member_count ?? 0}</td>
+              <td className="num" title={c.messages_purged ? `${c.messages_purged} removed by retention` : undefined}>
+                {c.stored_messages ?? 0}
+              </td>
               <td>
                 <input
                   type="checkbox"
@@ -542,11 +599,13 @@ function SlackChannels({ clients, onChanged }: { clients: any[]; onChanged: () =
                   onChange={(e) => patch(c.id, { watched: e.target.checked })}
                 />
               </td>
-              <td>{c.open_items ?? 0}</td>
+              <td className="num">{c.open_items ?? 0}</td>
             </tr>
           ))}
           {channels.length === 0 && (
-            <tr><td colSpan={4} className="empty">No channels yet — the sync lists the ones this account is in.</td></tr>
+            <tr><td colSpan={6} className="empty">
+              No channels yet — run the Slack channel sync, or start the worker.
+            </td></tr>
           )}
         </tbody>
       </table>

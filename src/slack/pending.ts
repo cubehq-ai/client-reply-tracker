@@ -1,4 +1,7 @@
-import { isAcknowledgement, mentionsOnlyInternal, type StoredSlackMessage } from './groups.js';
+import {
+  isAcknowledgement, isFyiOnly, mentionsOnlyInternal, mentionsOnlyOtherExternals,
+  type StoredSlackMessage,
+} from './groups.js';
 
 const TICK_REACTIONS = new Set(['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check']);
 
@@ -7,7 +10,11 @@ export type PendingReason =
   | 'tick_reaction'
   | 'internal_after'
   | 'acknowledgement'
-  | 'later_acknowledgement';
+  | 'later_acknowledgement'
+  | 'client_chatter'
+  | 'fyi'
+  | 'manual'
+  | 'classifier';
 
 export interface PendingVerdict {
   ts: string;
@@ -32,7 +39,13 @@ export interface PendingResult {
  * Per message rather than per group: a channel is one conversation, and what
  * matters is whether anything in it is unanswered.
  */
-export function computePending(messages: StoredSlackMessage[], internalUserIds: Set<string>): PendingResult {
+export function computePending(
+  messages: StoredSlackMessage[],
+  internalUserIds: Set<string>,
+  /** Known people from the client's side, for telling their chatter from a
+   *  question to us. Empty is safe: it only makes the rule not fire. */
+  externalUserIds: Set<string> = new Set(),
+): PendingResult {
   const live = messages.filter((m) => !m.deleted);
   const clientMessages = live.filter((m) => !m.isInternal);
   const internalMessages = live.filter((m) => m.isInternal);
@@ -53,6 +66,13 @@ export function computePending(messages: StoredSlackMessage[], internalUserIds: 
     const ts = Number(m.ts);
     const threadKey = m.threadTs ?? m.ts;
 
+    // 0. Somebody looked at this and said it was handled. The rules do not
+    //    get to argue with that on the next pass.
+    if (m.answeredAt != null) {
+      verdicts.push({ ts: m.ts, pending: false, closedBy: 'manual' });
+      continue;
+    }
+
     // 1. An internal reply in its thread, after it.
     const answeredInThread = internalMessages.some(
       (i) => (i.threadTs ?? i.ts) === threadKey && Number(i.ts) > ts,
@@ -64,6 +84,18 @@ export function computePending(messages: StoredSlackMessage[], internalUserIds: 
       ([name, users]) => TICK_REACTIONS.has(name) && users.some((u) => internalUserIds.has(u)),
     );
     if (ticked) { verdicts.push({ ts: m.ts, pending: false, closedBy: 'tick_reaction' }); continue; }
+
+    // 3a. Their own people talking to each other.
+    if (mentionsOnlyOtherExternals(m.text, internalUserIds, externalUserIds)) {
+      verdicts.push({ ts: m.ts, pending: false, closedBy: 'client_chatter' });
+      continue;
+    }
+
+    // 3b. Posted for visibility, not for an answer.
+    if (isFyiOnly(m.text)) {
+      verdicts.push({ ts: m.ts, pending: false, closedBy: 'fyi' });
+      continue;
+    }
 
     // 4. It asks nothing of us.
     if (isAcknowledgement(m.text)) {

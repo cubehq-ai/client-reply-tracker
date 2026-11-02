@@ -122,3 +122,56 @@ describe('acknowledgements as people actually write them', () => {
     'thanks, we still need the report today',
   ])('still sees the request inside %j', (t) => expect(isAcknowledgement(t)).toBe(false));
 });
+
+/**
+ * Two rules that only showed up against the real workspace. Most of the
+ * traffic in #reviews-* is the client's own people tagging each other, and
+ * most of the rest is "@team for vis" -- 39 items of work that were not work.
+ */
+describe('the client talking to themselves', () => {
+  const EXTERNAL = new Set(['U_CLIENT', 'U_CLIENT2']);
+  const pending = (messages: StoredSlackMessage[]): string[] =>
+    computePending(messages, INTERNAL, EXTERNAL).verdicts.filter((v) => v.pending).map((v) => v.ts);
+
+  it('a client tagging only their own colleague is not waiting on us', () => {
+    expect(pending([m({ ts: '1', minute: 0, text: '<@U_CLIENT2> can you pull this?' })])).toEqual([]);
+  });
+
+  it('a client tagging one of us is', () => {
+    expect(pending([m({ ts: '1', minute: 0, text: '<@U_US> can you pull this?' })])).toEqual(['1']);
+  });
+
+  it('a mention of someone we have never seen is treated as possibly ours', () => {
+    expect(pending([m({ ts: '1', minute: 0, text: '<@U_UNKNOWN> can you pull this?' })])).toEqual(['1']);
+  });
+
+  it('a broadcast to the room is not read as their chatter', () => {
+    // @here could be aimed at anyone in the channel, us included.
+    expect(pending([m({ ts: '1', minute: 0, text: '<!here> can someone look at this?' })])).toEqual(['1']);
+  });
+
+  it('a mention of their colleague alongside one of us stays pending', () => {
+    expect(pending([m({ ts: '1', minute: 0, text: '<@U_CLIENT2> <@U_US> thoughts' })])).toEqual(['1']);
+  });
+
+  it('closes a message posted only for visibility', () => {
+    expect(pending([
+      m({ ts: '1', minute: 0, text: '<!subteam^S1|@team> for vis' }),
+      m({ ts: '2', minute: 1, text: 'fyi' }),
+      m({ ts: '3', minute: 2, text: 'cc <@U_US>' }),
+    ])).toEqual([]);
+  });
+
+  it('does not close a message that only begins with fyi', () => {
+    expect(pending([m({ ts: '1', minute: 0, text: 'fyi the invoice is wrong, can you fix it?' })])).toEqual(['1']);
+  });
+});
+
+describe('a manual answer', () => {
+  it('outranks every rule, so the next pass does not reopen it', () => {
+    const answered = m({ ts: '1', minute: 0, text: 'Can you check the campaign?' });
+    answered.answeredAt = new Date(T0 + 60_000);
+    expect(pendingTs([answered])).toEqual([]);
+    expect(computePending([answered], INTERNAL).verdicts[0]?.closedBy).toBe('manual');
+  });
+});
