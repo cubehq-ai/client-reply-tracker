@@ -2,8 +2,10 @@
  * Browser QA. Drives the real app, asserts layout invariants that are easy to
  * break silently, and writes screenshots for review.
  *
- * Credentials come from the environment; never hardcode a login here.
- *   QA_EMAIL=... QA_PASSWORD=... node scripts/qa.mjs
+ * Sign-in is Google SSO only, which a headless browser cannot drive, so QA
+ * mints a session row for QA_EMAIL directly and sets the cookie. That needs
+ * DATABASE_URL to be the same database QA_BASE_URL is serving.
+ *   QA_EMAIL=... DATABASE_URL=... node scripts/qa.mjs
  *
  * Read-only by default. QA_SLACK_WRITE=true additionally exercises "Mark
  * answered", which changes real data in whatever database QA_BASE_URL is
@@ -11,15 +13,35 @@
  */
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import pg from 'pg';
 
 const BASE = process.env.QA_BASE_URL ?? 'http://localhost:8787';
 const EMAIL = process.env.QA_EMAIL;
-const PASSWORD = process.env.QA_PASSWORD;
 const OUT = process.env.QA_OUT ?? '/tmp/rq-shots';
 
-if (!EMAIL || !PASSWORD) {
-  console.error('set QA_EMAIL and QA_PASSWORD');
+if (!EMAIL || !process.env.DATABASE_URL) {
+  console.error('set QA_EMAIL and DATABASE_URL');
   process.exit(1);
+}
+
+/** Mints a session for an existing active user, the way the SSO callback would. */
+async function mintSession(email) {
+  const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    const { rows } = await client.query(
+      "SELECT id FROM users WHERE email = $1 AND status = 'active'", [email]);
+    if (!rows[0]) throw new Error(`no active user ${email}; QA cannot sign in`);
+    const id = randomBytes(32).toString('base64url');
+    await client.query(
+      'INSERT INTO sessions (id, user_id, expires_at, user_agent) VALUES ($1,$2,now() + interval \'1 hour\',$3)',
+      [id, rows[0].id, 'qa.mjs'],
+    );
+    return id;
+  } finally {
+    await client.end();
+  }
 }
 mkdirSync(OUT, { recursive: true });
 
@@ -34,10 +56,11 @@ const page = await browser.newPage({ viewport: { width: 1680, height: 950 } });
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(String(e).slice(0, 160)));
 
+const sessionId = await mintSession(EMAIL);
+await page.context().addCookies([{
+  name: 'rq_session', value: sessionId, url: BASE, httpOnly: true, sameSite: 'Lax',
+}]);
 await page.goto(BASE, { waitUntil: 'networkidle' });
-await page.fill('#email', EMAIL);
-await page.fill('#password', PASSWORD);
-await page.click('button[type="submit"]');
 await page.waitForSelector('.sidebar', { timeout: 20000 });
 await page.waitForTimeout(2500);
 

@@ -60,10 +60,12 @@ npm run api                   # http://localhost:8787
 npm run worker                # scheduled jobs, in a second terminal
 ```
 
-Sign-in accounts are created with:
+Sign-in is **Google SSO only**. A first sign-in from an `ORG_DOMAINS` address
+creates a plain member automatically, so accounts need provisioning only to
+grant a role in advance:
 
 ```bash
-npx tsx scripts/create-user.ts you@yourdomain.com 'a-password' admin 'Your Name'
+npx tsx scripts/create-user.ts you@yourdomain.com admin 'Your Name'
 ```
 
 Useful CLI commands: `sync`, `reconcile`, `discover`, `sync-clients`,
@@ -159,7 +161,7 @@ Test Files  37 passed (37)
      Tests  382 passed (382)
 ```
 
-Plus browser QA: `QA_EMAIL=... QA_PASSWORD=... node scripts/qa.mjs` drives the
+Plus browser QA: `QA_EMAIL=... DATABASE_URL=... node scripts/qa.mjs` drives the
 real app and asserts layout invariants (no horizontal overflow, consistent
 control heights, composer closed by default, no console errors), and a Slack
 section that asserts the channel list is a channel list, that no raw Slack
@@ -620,13 +622,12 @@ worked.
 ### After the first deploy
 1. Generate a domain on the **web** service only (Settings - Networking).
    The worker serves nothing and needs no domain.
-2. Change the seeded password immediately — the app is now reachable from the
-   internet and that password is the only thing in front of real client mail:
-   ```
-   npm run cli set-password -- dev@cubehq.ai 'a long passphrase'
-   ```
-   Run it against the production database (Railway shell, or locally with
-   `DATABASE_URL` set to production). It ends every existing session too.
+2. Confirm Google SSO works, because it is now the only way in. Set
+   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` and
+   `GOOGLE_OAUTH_REDIRECT_URI` on both services, and register that exact
+   redirect URI in the Google console. Access is revoked by suspending the
+   Workspace account; `npm run cli sign-out -- someone@cubehq.ai` cuts any
+   live session short rather than waiting out the 14-day cookie.
 3. `npm run jobs-qa` to confirm all 16 scheduled jobs run in the new
    environment.
 

@@ -1,10 +1,7 @@
-import { randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
-import { promisify } from 'node:util';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { one, query } from '../db/pool.js';
 import { config } from '../lib/config.js';
-
-const scrypt = promisify(scryptCb) as (p: string, s: Buffer, k: number) => Promise<Buffer>;
 
 const SESSION_COOKIE = 'rq_session';
 const SESSION_DAYS = 14;
@@ -15,22 +12,6 @@ export interface SessionUser {
   name: string | null;
   role: 'member' | 'manager' | 'admin';
   canSendAsShared: boolean;
-}
-
-export async function hashPassword(password: string): Promise<string> {
-  const salt = randomBytes(16);
-  const derived = await scrypt(password, salt, 64);
-  return `scrypt$${salt.toString('base64')}$${derived.toString('base64')}`;
-}
-
-export async function verifyPassword(password: string, stored: string | null): Promise<boolean> {
-  if (!stored) return false;
-  const [scheme, saltB64, hashB64] = stored.split('$');
-  if (scheme !== 'scrypt' || !saltB64 || !hashB64) return false;
-  const expected = Buffer.from(hashB64, 'base64');
-  const derived = await scrypt(password, Buffer.from(saltB64, 'base64'), expected.length);
-  // Constant-time compare so a wrong password cannot be timed out character by character.
-  return expected.length === derived.length && timingSafeEqual(expected, derived);
 }
 
 export async function createSession(userId: number, req: FastifyRequest): Promise<{ id: string; expiresAt: Date }> {

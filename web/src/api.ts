@@ -85,8 +85,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   me: () => request<{ user: User | null; googleSso: boolean }>('/api/auth/me'),
-  login: (email: string, password: string) =>
-    request<{ ok: true }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
   logout: () => request<{ ok: true }>('/api/auth/logout', { method: 'POST' }),
   health: () => request<any>('/api/health'),
 

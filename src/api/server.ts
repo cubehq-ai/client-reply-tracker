@@ -25,7 +25,7 @@ import {
 import {
   checkOAuthState, clearSessionCookie, createSession, currentUser, destroySession,
   exchangeGoogleCode, googleRedirectUri, googleSsoConfigured, HttpError, newOAuthState,
-  requireRole, requireUser, setSessionCookie, userFromGoogle, verifyPassword,
+  requireRole, requireUser, setSessionCookie, userFromGoogle,
 } from './auth.js';
 import { draftReply, getThread, sendReply } from './compose.js';
 import { fetchAttachment } from './attachments.js';
@@ -73,20 +73,6 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   // ---------- auth ----------
-  app.post('/api/auth/login', async (req, reply) => {
-    const body = z.object({ email: z.string().email(), password: z.string().min(1) }).parse(req.body);
-    const user = await one<{ id: string; password_hash: string | null; status: string }>(
-      'SELECT id, password_hash, status FROM users WHERE email = $1',
-      [body.email.toLowerCase()],
-    );
-    // Same message either way, so the form cannot be used to enumerate accounts.
-    if (!user || user.status !== 'active' || !(await verifyPassword(body.password, user.password_hash))) {
-      return reply.code(401).send({ error: 'invalid email or password' });
-    }
-    const session = await createSession(Number(user.id), req);
-    setSessionCookie(reply, session.id, session.expiresAt);
-    return { ok: true };
-  });
 
   app.post('/api/auth/logout', async (req, reply) => {
     await destroySession(req);
