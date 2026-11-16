@@ -26,6 +26,78 @@ const BULK_LABELS = new Set(['SPAM', 'CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL', '
 
 const AUTOMATED_LOCAL = /^(no[-._]?reply|do[-._]?not[-._]?reply|donotreply|notifications?|mailer[-._]?daemon|postmaster|bounces?)([-._+].*)?$/i;
 
+/**
+ * Role addresses: a department, a product or a mailing list, never a person.
+ *
+ * Promotional mail reaches the queue through the previously-contacted branch:
+ * someone once emailed a vendor, the vendor's domain is now "known", and every
+ * newsletter from it arrives as an unmatched item needing a reply. Senders
+ * like these are not people and do not wait on an answer.
+ *
+ * Deliberately a denylist of non-names rather than a guess at what a human
+ * name looks like. "j.smith2" and "anna-maria" are people; no pattern
+ * separates them from "info" without throwing away real senders.
+ *
+ * Client mail never reaches this check: a client's own support@ or
+ * accounts@ is a real conversation, and branch 1 returns before bulk rules.
+ */
+const ROLE_LOCAL = new Set([
+  // Front desk
+  'info', 'information', 'hello', 'hallo', 'hi', 'hey', 'contact', 'contactus',
+  'enquiry', 'enquiries', 'inquiry', 'inquiries', 'ask', 'general', 'office',
+  'reception', 'mail', 'email', 'mailbox', 'inbox', 'webmail',
+  // Support
+  'support', 'help', 'helpdesk', 'desk', 'service', 'services', 'customerservice',
+  'customercare', 'customersuccess', 'care', 'assist', 'assistance', 'ticket',
+  'tickets', 'issues',
+  // Commercial
+  'sales', 'marketing', 'promo', 'promotions', 'offers', 'deals', 'partners',
+  'partnerships', 'business', 'bizdev', 'leads', 'crm', 'outreach', 'growth',
+  // Money
+  'billing', 'invoice', 'invoices', 'invoicing', 'accounts', 'accounting',
+  'accountspayable', 'accountsreceivable', 'payments', 'payment', 'finance',
+  'financial', 'receipts', 'receipt', 'orders', 'order', 'refunds', 'refund',
+  'subscriptions', 'subscription',
+  // Content and lists
+  'newsletter', 'newsletters', 'news', 'updates', 'update', 'digest', 'blog',
+  'press', 'media', 'pr', 'marketingteam', 'campaign', 'campaigns', 'events',
+  'event', 'webinar', 'webinars', 'community', 'social', 'insights', 'weekly',
+  'monthly',
+  // Automated systems
+  'alert', 'alerts', 'notify', 'notice', 'notices', 'reminder', 'reminders',
+  'system', 'sysadmin', 'admin', 'administrator', 'root', 'daemon', 'robot',
+  'bot', 'bots', 'automated', 'automation', 'auto', 'mailer', 'mailing',
+  'mailerdaemon', 'relay', 'smtp', 'server', 'status', 'monitoring', 'monitor',
+  // Internet role accounts (RFC 2142 and friends)
+  'webmaster', 'hostmaster', 'abuse', 'security', 'privacy', 'compliance',
+  'legal', 'dpo', 'gdpr',
+  // People ops
+  'hr', 'people', 'careers', 'career', 'jobs', 'job', 'recruiting',
+  'recruitment', 'recruiter', 'talent', 'hiring', 'apply', 'applications',
+  // Product lifecycle
+  'welcome', 'onboarding', 'getstarted', 'feedback', 'survey', 'surveys',
+  'review', 'reviews', 'rating', 'ratings', 'invite', 'invites', 'invitation',
+  'invitations', 'verify', 'verification', 'confirm', 'confirmation',
+  'password', 'account', 'login', 'signup', 'register', 'registration',
+  'unsubscribe', 'optout', 'preferences', 'messages', 'message', 'reply',
+  'replies', 'team', 'teams', 'group', 'groups', 'list', 'lists',
+  'shipping', 'delivery', 'tracking', 'dispatch', 'logistics',
+]);
+
+/**
+ * True when the local part is a role rather than a person.
+ *
+ * Suffixes are stripped so "support+tag", "news-uk" and "info.us" are caught,
+ * and a leading "the" is ignored because "theteam@" is the same sender.
+ */
+function isRoleAddress(local: string): boolean {
+  const bare = local.toLowerCase().split(/[+]/)[0] ?? '';
+  if (ROLE_LOCAL.has(bare.replace(/[-._]/g, ''))) return true;
+  // "news-uk", "sales.emea", "support_2024": the head decides.
+  const head = bare.split(/[-._]/)[0] ?? '';
+  return head.length > 1 && ROLE_LOCAL.has(head);
+}
+
 const AUTOREPLY_SUBJECT = /\b(out of (the )?office|automatic reply|auto[- ]?reply|autoreply|vacation reply|on leave)\b/i;
 
 const BOUNCE_SUBJECT = /\b(delivery status notification|undeliverable|returned mail|mail delivery (failed|subsystem)|message not delivered)\b/i;
@@ -102,6 +174,7 @@ function bulkReason(msg: NormalizedMessage, local: string): string | null {
   if (automated) return automated;
 
   if (AUTOMATED_LOCAL.test(local)) return 'automated_sender';
+  if (isRoleAddress(local)) return 'role_address';
   if (msg.hasCalendarPart) return 'calendar';
 
   return null;
