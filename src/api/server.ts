@@ -5,7 +5,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
 import { one, query } from '../db/pool.js';
-import { config } from '../lib/config.js';
+import { config, useRealGoogle } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { isEntrypoint } from '../lib/main.js';
 import { loadOrgContext } from '../pipeline/context.js';
@@ -64,7 +64,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     return {
       ok: db?.ok === 1,
       sync,
-      googleBackend: config.google.serviceAccountFile ? config.google.backend : 'fake',
+      googleBackend: useRealGoogle() ? 'real' : 'fake',
       sendEnabled: config.safety.sendEnabled,
       gmailWriteEnabled: config.safety.gmailWriteEnabled,
       classifier: config.classifier.apiKey ? 'anthropic' : 'heuristic',
@@ -336,7 +336,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     return { mailboxes, domains, rules, exclusions, jobs, config: {
       sendEnabled: config.safety.sendEnabled,
       gmailWriteEnabled: config.safety.gmailWriteEnabled,
-      backend: config.google.serviceAccountFile ? config.google.backend : 'fake',
+      backend: useRealGoogle() ? 'real' : 'fake',
       classifier: config.classifier.apiKey ? 'anthropic' : 'heuristic',
       backfillDays: config.org.backfillDays,
       slaHours: config.sla.defaultHours,

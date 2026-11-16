@@ -94,8 +94,13 @@ describe('.env.example matches what the app reads', () => {
         .map((m) => m[1]!),
     );
 
-    // Read directly from process.env rather than through config helpers.
+    // Read directly from process.env rather than through config helpers. The
+    // OAuth three are read at call time on purpose: the redirect URI has to be
+    // identical in the authorisation request, the token exchange and the
+    // Google console, and reading it live keeps those from drifting apart.
     read.add('DNS_FALLBACK_SERVERS');
+    for (const k of ['GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET',
+      'GOOGLE_OAUTH_REDIRECT_URI']) read.add(k);
     // Test-only or legacy aliases, deliberately undocumented.
     for (const k of ['FIXTURES_ENABLED', 'MONGO_URL', 'DB_NAME', 'CLIENT_DB_URL',
       'INTERNAL_DB_URL', 'INTERNAL_DB_CLIENTS_QUERY', 'INTERNAL_DB_EMPLOYEES_QUERY']) read.delete(k);
