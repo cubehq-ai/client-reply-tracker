@@ -27,7 +27,7 @@ function keyFile(): KeyFile {
     );
   }
 
-  const raw = file ? readKeyFile(file) : inline;
+  const raw = resolveKeyMaterial(file, inline);
   try {
     cachedKey = JSON.parse(raw) as KeyFile;
   } catch {
@@ -39,6 +39,29 @@ function keyFile(): KeyFile {
     throw new Error('The service account key has no client_email or private_key.');
   }
   return cachedKey;
+}
+
+/**
+ * Picks the key text: the file when it is readable, the inline JSON otherwise.
+ *
+ * The file wins so a laptop keeps using its own key, but an unreadable path
+ * now falls through to the inline key instead of failing. Carrying a laptop's
+ * GOOGLE_SERVICE_ACCOUNT_FILE into a deployment alongside a perfectly good
+ * GOOGLE_SERVICE_ACCOUNT_JSON used to fail every mailbox on every pass, for a
+ * file the build never ships, and the dashboard still reported the backend as
+ * real because the variable was merely set.
+ */
+export function resolveKeyMaterial(file: string, inline: string): string {
+  if (file && inline) {
+    try {
+      return readKeyFile(file);
+    } catch (err) {
+      logger.warn({ file, err: (err as Error).message },
+        'service account key file unreadable, falling back to GOOGLE_SERVICE_ACCOUNT_JSON');
+      return inline;
+    }
+  }
+  return file ? readKeyFile(file) : inline;
 }
 
 /** Reads the key file, saying which path failed rather than just ENOENT. */

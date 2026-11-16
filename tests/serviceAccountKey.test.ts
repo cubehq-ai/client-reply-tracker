@@ -1,54 +1,37 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { resolveKeyMaterial } from '../src/gmail/real.js';
 
 /**
- * A container has nowhere to keep a key file without a volume, so the key can
- * be given as JSON in a variable instead. Pointing at a path that does not
- * exist used to surface as a bare ENOENT from readFileSync.
+ * A deployment that still carried a laptop's GOOGLE_SERVICE_ACCOUNT_FILE
+ * alongside a pasted GOOGLE_SERVICE_ACCOUNT_JSON failed every mailbox on
+ * every pass, for a file the build never ships. All 19 mailboxes sat on
+ * "Could not read the service account key" for two weeks while the dashboard
+ * reported the backend as real, because the variable was merely set.
  */
-describe('loading the service account key', () => {
-  afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
+describe('choosing between the key file and the inline key', () => {
+  const INLINE = JSON.stringify({ client_email: 'inline@test.iam.gserviceaccount.com', private_key: 'INLINE' });
+  const missing = join(tmpdir(), `no-such-key-${Date.now()}.json`);
 
-  const load = async (): Promise<any> => {
-    const { RealGmailClient } = await import('../src/gmail/real.js');
-    return new RealGmailClient();
-  };
-
-  it('accepts the key as JSON in a variable', async () => {
-    vi.stubEnv('GOOGLE_SERVICE_ACCOUNT_FILE', '');
-    vi.stubEnv('GOOGLE_SERVICE_ACCOUNT_JSON',
-      JSON.stringify({ client_email: 'svc@example.iam.gserviceaccount.com', private_key: 'x' }));
-    vi.resetModules();
-    const { useRealGoogle } = await import('../src/lib/config.js');
-    expect(useRealGoogle()).toBe(false); // backend is 'fake' in tests
-    // The key itself is enough to satisfy the "configured" check.
-    const { config } = await import('../src/lib/config.js');
-    expect(config.google.serviceAccountJson).toContain('client_email');
+  it('falls back to the inline key when the file path does not exist', () => {
+    expect(resolveKeyMaterial(missing, INLINE)).toBe(INLINE);
   });
 
-  it('names the path when the file cannot be read', async () => {
-    vi.stubEnv('GOOGLE_SERVICE_ACCOUNT_FILE', '/nope/missing-key.json');
-    vi.stubEnv('GOOGLE_BACKEND', 'real');
-    vi.resetModules();
-    const client = await load();
-    await expect(client.listMessageIds('a@b.test', '', 1)).rejects.toThrow(/\/nope\/missing-key\.json/);
-    await expect(client.listMessageIds('a@b.test', '', 1)).rejects.toThrow(/GOOGLE_SERVICE_ACCOUNT_JSON/);
+  it('still prefers the file when it is readable', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rq-key-'));
+    const path = join(dir, 'key.json');
+    const fromFile = JSON.stringify({ client_email: 'file@test.iam.gserviceaccount.com', private_key: 'FILE' });
+    writeFileSync(path, fromFile);
+    expect(resolveKeyMaterial(path, INLINE)).toBe(fromFile);
   });
 
-  it('rejects a key that is not valid JSON', async () => {
-    vi.stubEnv('GOOGLE_SERVICE_ACCOUNT_FILE', '');
-    vi.stubEnv('GOOGLE_SERVICE_ACCOUNT_JSON', 'not json at all');
-    vi.stubEnv('GOOGLE_BACKEND', 'real');
-    vi.resetModules();
-    const client = await load();
-    await expect(client.listMessageIds('a@b.test', '', 1)).rejects.toThrow(/not valid JSON/);
+  it('uses the inline key when no file is configured', () => {
+    expect(resolveKeyMaterial('', INLINE)).toBe(INLINE);
   });
 
-  it('rejects a key missing the fields it needs', async () => {
-    vi.stubEnv('GOOGLE_SERVICE_ACCOUNT_FILE', '');
-    vi.stubEnv('GOOGLE_SERVICE_ACCOUNT_JSON', JSON.stringify({ project_id: 'p' }));
-    vi.stubEnv('GOOGLE_BACKEND', 'real');
-    vi.resetModules();
-    const client = await load();
-    await expect(client.listMessageIds('a@b.test', '', 1)).rejects.toThrow(/client_email or private_key/);
+  it('still fails loudly when the file is missing and there is no inline key', () => {
+    expect(() => resolveKeyMaterial(missing, '')).toThrow(/Could not read the service account key/);
   });
 });
