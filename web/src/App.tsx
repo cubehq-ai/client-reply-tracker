@@ -400,7 +400,16 @@ function SyncBanner({ health }: { health: any }) {
       <div className="banner danger" style={{ marginBottom: 14 }}>
         <strong>Not syncing.</strong> No mailbox has updated since{' '}
         {sync.oldestSyncedAt ? new Date(sync.oldestSyncedAt).toLocaleString() : 'ever'}. Everything below is a
-        stale snapshot — start the worker with <span className="mono">npm run worker</span>.
+        stale snapshot.
+        {sync.lastError ? (
+          <>
+            {' '}All {sync.mailboxesWithErrors} mailboxes are failing on:{' '}
+            <span className="mono" style={{ wordBreak: 'break-word' }}>{sync.lastError}</span>
+          </>
+        ) : (
+          <> The worker is not running: start it with <span className="mono">npm run worker</span>, or check
+            that the worker service is up.</>
+        )}
       </div>
     );
   }
