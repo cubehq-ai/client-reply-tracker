@@ -329,10 +329,12 @@ and before client matching, in `priority` order, and `allow` always beats
 7. **Forwarded-client-email detection** (SPEC §12) is explicitly v2 in the spec
    and is not implemented.
 8. **Attachments** are metadata-only, per SPEC §9 ("v1 none or simple upload").
-9. **Google SSO** is wired to the login page and the `/api/auth/google` route
-   builds a correct authorisation URL, but the callback exchange is not
-   implemented — add `GOOGLE_OAUTH_CLIENT_ID`/`SECRET` and the callback handler
-   when you want it. Password login is complete and works now.
+9. **Google SSO** is implemented end to end: `/api/auth/google` starts the
+   flow and `/api/auth/google/callback` exchanges the code, verifies the ID
+   token, checks the domain against `ORG_DOMAINS` and opens a session. Set
+   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` and
+   `GOOGLE_OAUTH_REDIRECT_URI`, and register that exact redirect URI in the
+   Google console. Password login is complete and works alongside it.
 
 **Worth knowing**
 

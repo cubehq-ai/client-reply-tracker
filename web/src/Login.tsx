@@ -4,7 +4,13 @@ import { api } from './api';
 export function Login({ googleSso, onSignedIn }: { googleSso: boolean; onSignedIn: () => void }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // The SSO callback cannot render a banner itself, so it redirects back with
+  // the reason in the query string and the login page shows it.
+  const [error, setError] = useState<string | null>(() => {
+    const reason = new URLSearchParams(window.location.search).get('sso_error');
+    if (reason) window.history.replaceState({}, '', window.location.pathname);
+    return reason;
+  });
   const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {

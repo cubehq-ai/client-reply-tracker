@@ -114,3 +114,132 @@ export function requireRole(user: SessionUser, roles: SessionUser['role'][]): vo
 export function googleSsoConfigured(): boolean {
   return Boolean(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET);
 }
+
+// ---------- Google SSO ----------
+
+const OAUTH_STATE_COOKIE = 'rq_oauth_state';
+
+/**
+ * The redirect URI must be byte-identical in the authorisation request, the
+ * token exchange and the Google console entry, so all three read it from here.
+ * The localhost default keeps a laptop working; anything deployed must set
+ * GOOGLE_OAUTH_REDIRECT_URI, since Google rejects a mismatch outright.
+ */
+export function googleRedirectUri(): string {
+  return process.env.GOOGLE_OAUTH_REDIRECT_URI
+    ?? `http://localhost:${config.server.port}/api/auth/google/callback`;
+}
+
+/** Random state, parked in a short-lived cookie, so the callback can prove the
+ *  flow started here and is not a forged redirect. */
+export function newOAuthState(reply: FastifyReply): string {
+  const state = randomBytes(16).toString('base64url');
+  const parts = [
+    `${OAUTH_STATE_COOKIE}=${state}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=600',
+  ];
+  if (process.env.NODE_ENV === 'production') parts.push('Secure');
+  reply.header('Set-Cookie', parts.join('; '));
+  return state;
+}
+
+/** True when the callback's state matches the cookie. Single use either way. */
+export function checkOAuthState(req: FastifyRequest, reply: FastifyReply, state: string | undefined): boolean {
+  const expected = readCookie(req, OAUTH_STATE_COOKIE);
+  const clear = [`${OAUTH_STATE_COOKIE}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
+  reply.header('Set-Cookie', clear.join('; '));
+  if (!expected || !state) return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(state);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+export interface GoogleIdentity {
+  sub: string;
+  email: string;
+  name: string | null;
+  emailVerified: boolean;
+  hd: string | null;
+}
+
+/**
+ * Exchanges the one-time code for tokens and verifies the returned ID token's
+ * signature and audience with Google's published keys. Verifying matters: the
+ * code comes back through the user's browser, so nothing before this point is
+ * trustworthy on its own.
+ */
+export async function exchangeGoogleCode(code: string): Promise<GoogleIdentity> {
+  const { OAuth2Client } = await import('google-auth-library');
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID!;
+  const client = new OAuth2Client(clientId, process.env.GOOGLE_OAUTH_CLIENT_SECRET!, googleRedirectUri());
+
+  const { tokens } = await client.getToken(code);
+  if (!tokens.id_token) throw new HttpError(401, 'google returned no id_token');
+
+  const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: clientId });
+  const payload = ticket.getPayload();
+  if (!payload?.sub || !payload.email) throw new HttpError(401, 'google id_token has no subject or email');
+
+  return {
+    sub: payload.sub,
+    email: payload.email.toLowerCase(),
+    name: payload.name ?? null,
+    emailVerified: payload.email_verified === true,
+    hd: payload.hd ?? null,
+  };
+}
+
+/**
+ * Resolves a verified Google identity to a local user.
+ *
+ * Matching is by `google_sub` first and email second: the sub is stable when
+ * someone is renamed, and the email link is what adopts an account an admin
+ * (or the roster sync) created earlier. A first sign-in from an org domain
+ * provisions a plain member -- roles stay an admin's decision, never Google's.
+ */
+export async function userFromGoogle(identity: GoogleIdentity): Promise<SessionUser> {
+  if (!identity.emailVerified) throw new HttpError(403, 'google account has an unverified email');
+
+  const domain = identity.email.split('@')[1] ?? '';
+  const allowed = config.org.domains.map((d) => d.toLowerCase());
+  if (allowed.length && !allowed.includes(domain)) {
+    throw new HttpError(403, `${identity.email} is not on an organisation domain`);
+  }
+
+  const existing = await one<{ id: string; status: string }>(
+    'SELECT id, status FROM users WHERE google_sub = $1 OR email = $2',
+    [identity.sub, identity.email],
+  );
+
+  if (existing) {
+    if (existing.status !== 'active') throw new HttpError(403, 'this account is not active');
+    await query(
+      `UPDATE users SET google_sub = $1, name = COALESCE(name, $2), updated_at = now() WHERE id = $3`,
+      [identity.sub, identity.name, existing.id],
+    );
+  } else {
+    await query(
+      `INSERT INTO users (email, name, role, status, google_sub)
+       VALUES ($1, $2, 'member', 'active', $3)
+       ON CONFLICT (email) DO UPDATE SET google_sub = EXCLUDED.google_sub`,
+      [identity.email, identity.name, identity.sub],
+    );
+  }
+
+  const user = await one<{ id: string; email: string; name: string | null; role: string; can_send_as_shared: boolean }>(
+    `SELECT id, email, name, role, can_send_as_shared FROM users WHERE google_sub = $1`,
+    [identity.sub],
+  );
+  if (!user) throw new HttpError(500, 'could not load the user after sign-in');
+
+  return {
+    id: Number(user.id),
+    email: user.email,
+    name: user.name,
+    role: user.role as SessionUser['role'],
+    canSendAsShared: user.can_send_as_shared,
+  };
+}

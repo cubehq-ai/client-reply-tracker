@@ -23,8 +23,9 @@ import {
   type IgnoreReason, type IgnoreScope,
 } from './actions.js';
 import {
-  clearSessionCookie, createSession, currentUser, destroySession, googleSsoConfigured,
-  HttpError, requireRole, requireUser, setSessionCookie, verifyPassword,
+  checkOAuthState, clearSessionCookie, createSession, currentUser, destroySession,
+  exchangeGoogleCode, googleRedirectUri, googleSsoConfigured, HttpError, newOAuthState,
+  requireRole, requireUser, setSessionCookie, userFromGoogle, verifyPassword,
 } from './auth.js';
 import { draftReply, getThread, sendReply } from './compose.js';
 import { fetchAttachment } from './attachments.js';
@@ -107,13 +108,48 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
     const params = new URLSearchParams({
       client_id: process.env.GOOGLE_OAUTH_CLIENT_ID!,
-      redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI ?? `http://localhost:${config.server.port}/api/auth/google/callback`,
+      redirect_uri: googleRedirectUri(),
       response_type: 'code',
       scope: 'openid email profile',
-      hd: config.org.domains[0] ?? '',
+      state: newOAuthState(reply),
       prompt: 'select_account',
     });
+    // hd only hints at the account chooser; the callback still checks the
+    // verified domain itself, because a hint is not an authorisation.
+    const hd = config.org.domains[0];
+    if (hd) params.set('hd', hd);
     return reply.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+  });
+
+  /**
+   * Google sends the user back here with a one-time code. Everything in this
+   * request arrived via the browser, so the code is exchanged server-side and
+   * the resulting ID token is signature-verified before any session exists.
+   * Failures go back to the login page with a short reason rather than a JSON
+   * error, since the person is looking at a browser, not an API client.
+   */
+  app.get('/api/auth/google/callback', async (req, reply) => {
+    const q = req.query as { code?: string; state?: string; error?: string };
+    const back = (reason: string) => reply.redirect(`/?sso_error=${encodeURIComponent(reason)}`);
+
+    if (!googleSsoConfigured()) return back('Google sign-in is not configured');
+    if (q.error) return back(q.error);
+    if (!q.code) return back('google did not return a code');
+    if (!checkOAuthState(req, reply, q.state)) return back('sign-in expired, please try again');
+
+    try {
+      const identity = await exchangeGoogleCode(q.code);
+      const user = await userFromGoogle(identity);
+      const session = await createSession(user.id, req);
+      setSessionCookie(reply, session.id, session.expiresAt);
+      logger.info({ email: user.email }, 'signed in with google');
+      return reply.redirect('/');
+    } catch (err: any) {
+      // An expected refusal (wrong domain, suspended) is not server noise.
+      if (err instanceof HttpError) return back(err.message);
+      logger.error({ err }, 'google sign-in failed');
+      return back('google sign-in failed');
+    }
   });
 
   // ---------- queues ----------
