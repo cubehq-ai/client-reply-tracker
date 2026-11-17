@@ -107,17 +107,23 @@ export function Inbox({ user, filters, setFilters, clients, users, teams, onOpen
 
       <div className="tabs">
         {CHANNELS.map((c) => {
-          const ready = c.key !== 'slack' || slack?.connected === true;
+          // null means the status has not come back yet. Treating unknown as
+          // disconnected made the Slack tab flash "not connected" on every
+          // load and every return to the inbox, for a workspace that is
+          // connected. Only an explicit false disables it.
+          const ready = c.key !== 'slack' || slack === null || slack.connected;
           return (
             <button
               key={c.key}
               className={`tab ${(filters.source ?? 'gmail') === c.key ? 'active' : ''}`}
               disabled={!ready}
               title={ready ? undefined : 'Set SLACK_USER_TOKEN to connect Slack'}
+              aria-busy={c.key === 'slack' && slack === null}
               onClick={() => set({ source: c.key, channelIds: '' })}
             >
               {c.label}
-              {!ready && <span className="tag" style={{ marginLeft: 6 }}>not connected</span>}
+              {c.key === 'slack' && slack?.connected === false
+                && <span className="tag" style={{ marginLeft: 6 }}>not connected</span>}
             </button>
           );
         })}
